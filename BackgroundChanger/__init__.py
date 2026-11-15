@@ -1,0 +1,1 @@
+"""Background Studio application package."""

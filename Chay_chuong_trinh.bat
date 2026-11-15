@@ -37,7 +37,7 @@ if errorlevel 1 (
 
 echo Dang khoi dong Background Studio...
 start "Background Studio" http://127.0.0.1:5000
-"%PYTHON%" "BackgroundChanger\app.py"
+"%PYTHON%" -m BackgroundChanger.app
 pause
 exit /b
 

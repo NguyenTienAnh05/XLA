@@ -2,6 +2,22 @@
 
 Ứng dụng web thay nền ảnh bằng Python, Flask và rembg.
 
+## Cấu trúc mã nguồn
+
+```text
+BackgroundChanger/
+├── app.py                         # Tạo ứng dụng Flask và khởi chạy local
+├── config.py                      # Đường dẫn, giới hạn ảnh và cấu hình
+├── routes.py                      # Trang web và các API
+├── image_processing/
+│   ├── __init__.py                # Giao diện các hàm xử lý ảnh
+│   └── background_removal.py      # Tách nền và làm mịn alpha
+├── templates/                     # Giao diện HTML
+└── static/                        # CSS, JavaScript và ảnh kết quả
+```
+
+`app.py` lắp ghép các phần; `routes.py` nhận yêu cầu từ trình duyệt; `image_processing` thực hiện việc xử lý ảnh; `config.py` gom các thiết lập dùng chung.
+
 ## Chạy nhanh trên Windows
 
 Nhấp đúp vào **`Chay_chuong_trinh.bat`** ở thư mục dự án. Lần đầu chạy, chương trình sẽ tạo môi trường Python và cài các thư viện cần thiết; bước này cần Internet. Sau đó trình duyệt mở tại:
@@ -19,7 +35,7 @@ Từ thư mục dự án:
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r BackgroundChanger\requirements.txt
-.venv\Scripts\python.exe BackgroundChanger\app.py
+.venv\Scripts\python.exe -m BackgroundChanger.app
 ```
 
 ## Tính năng
