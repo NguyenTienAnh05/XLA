@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Background Studio - Thay đổi nền ảnh</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">◈ Background<span>Studio</span></a>
+    <span class="top-note">AI Background Editor</span>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div class="eyebrow">IMAGE EDITING WORKSPACE</div>
+      <h1>Thay đổi nền ảnh <span>trong vài bước</span></h1>
+      <p>Tự động tách chủ thể, chọn nền mới và tinh chỉnh kết quả ngay trên trình duyệt.</p>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel controls">
+        <div class="panel-heading">
+          <div>
+            <div class="step">BƯỚC 01</div>
+            <h2>Ảnh chủ thể</h2>
+          </div>
+          <span class="pill">Bắt buộc</span>
+        </div>
+
+        <label class="upload-zone" for="subjectInput" id="subjectDrop">
+          <div class="upload-icon">↑</div>
+          <strong>Chọn ảnh từ thiết bị</strong>
+          <span>Kéo thả hoặc nhấn để tải lên</span>
+          <small>PNG, JPG, WEBP · Tối đa 12 MB</small>
+        </label>
+        <input type="file" id="subjectInput" accept="image/png,image/jpeg,image/webp" hidden>
+        <div class="file-name" id="subjectName">Chưa có ảnh được chọn</div>
+
+        <div class="divider"></div>
+        <div class="panel-heading">
+          <div>
+            <div class="step">BƯỚC 02</div>
+            <h2>Nền mới</h2>
+          </div>
+        </div>
+        <label class="upload-zone compact" for="backgroundInput" id="backgroundDrop">
+          <div class="upload-icon">＋</div>
+          <strong>Tải ảnh nền mới</strong>
+          <span>Hoặc chọn một màu nền bên dưới</span>
+        </label>
+        <input type="file" id="backgroundInput" accept="image/png,image/jpeg,image/webp" hidden>
+        <div class="swatches" aria-label="Màu nền có sẵn">
+          <button class="swatch selected" data-color="#e9edf5" style="--swatch:#e9edf5" title="Xám sáng"></button>
+          <button class="swatch" data-color="#dcefe8" style="--swatch:#dcefe8" title="Xanh nhạt"></button>
+          <button class="swatch" data-color="#f5e5d7" style="--swatch:#f5e5d7" title="Be"></button>
+          <button class="swatch" data-color="#26354a" style="--swatch:#26354a" title="Xanh đậm"></button>
+          <button class="swatch" data-color="#ffffff" style="--swatch:#ffffff" title="Trắng"></button>
+        </div>
+        <div class="file-name" id="backgroundName">Nền màu xám sáng</div>
+
+        <div class="divider"></div>
+        <div class="panel-heading">
+          <div>
+            <div class="step">BƯỚC 03</div>
+            <h2>Tinh chỉnh</h2>
+          </div>
+        </div>
+
+        <div class="slider-control">
+          <div class="slider-label"><label for="feather">Làm mềm viền</label><output id="featherValue">1.2</output></div>
+          <input id="feather" type="range" min="0" max="5" step="0.2" value="1.2">
+          <small>Áp dụng khi tách nền.</small>
+        </div>
+        <button class="btn btn-primary full" id="removeBtn">✦ Tách nền tự động</button>
+        <div class="status" id="status" role="status">Tải ảnh lên để bắt đầu.</div>
+
+        <div class="divider"></div>
+        <div class="slider-control">
+          <div class="slider-label"><label for="scale">Kích thước chủ thể</label><output id="scaleValue">100%</output></div>
+          <input id="scale" type="range" min="30" max="160" value="100">
+        </div>
+        <div class="slider-control">
+          <div class="slider-label"><label for="brightness">Độ sáng</label><output id="brightnessValue">100%</output></div>
+          <input id="brightness" type="range" min="50" max="150" value="100">
+        </div>
+        <div class="slider-control">
+          <div class="slider-label"><label for="contrast">Độ tương phản</label><output id="contrastValue">100%</output></div>
+          <input id="contrast" type="range" min="50" max="150" value="100">
+        </div>
+        <div class="slider-control">
+          <div class="slider-label"><label for="saturation">Độ bão hòa</label><output id="saturationValue">100%</output></div>
+          <input id="saturation" type="range" min="0" max="200" value="100">
+        </div>
+        <div class="slider-control">
+          <div class="slider-label"><label for="bgBlur">Làm mờ nền</label><output id="bgBlurValue">0 px</output></div>
+          <input id="bgBlur" type="range" min="0" max="12" value="0">
+        </div>
+        <button class="btn btn-ghost full" id="resetBtn">↺ Đặt lại chỉnh sửa</button>
+      </aside>
+
+      <section class="panel preview-panel">
+        <div class="preview-header">
+          <div>
+            <div class="step">LIVE PREVIEW</div>
+            <h2>Xem trước kết quả</h2>
+          </div>
+          <span class="pill success" id="previewState">Chưa tách nền</span>
+        </div>
+        <div class="canvas-wrap" id="canvasWrap">
+          <canvas id="previewCanvas" width="1200" height="800"></canvas>
+          <div class="empty-state" id="emptyState">
+            <div class="empty-art">▧</div>
+            <strong>Không gian xem trước</strong>
+            <span>Ảnh sau khi xử lý sẽ xuất hiện tại đây.</span>
+          </div>
+        </div>
+        <div class="preview-tools">
+          <span>Di chuyển chủ thể bằng cách kéo trực tiếp trên ảnh.</span>
+          <button class="btn btn-primary" id="downloadBtn" disabled>↓ Tải ảnh kết quả</button>
+        </div>
+        <div class="tips">
+          <strong>Mẹo để có kết quả tốt</strong>
+          <p>Ưu tiên ảnh có chủ thể rõ ràng, đủ sáng và không bị che khuất quá nhiều. Ảnh nền mới nên có tỷ lệ gần với khung hình mong muốn.</p>
+        </div>
+      </section>
+    </section>
+    <footer>Background Studio · Python 3.12 · Flask · rembg · OpenCV</footer>
+  </main>
+  <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
