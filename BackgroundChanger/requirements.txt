@@ -1,4 +1,12 @@
 Flask>=3.0,<4.0
+
+# PyTorch phải được cài riêng theo phiên bản CUDA của máy.
+# Không cài torch từ file requirements này.
+
+transformers>=4.57.0,<6.0
+accelerate>=1.0
+safetensors>=0.4
+
 rembg[cpu]>=2.0.60
 Pillow>=10.0
 opencv-python-headless>=4.8

@@ -33,11 +33,25 @@ Sau đó mở <http://127.0.0.1:5000>. Lần đầu chạy, cần cài thư vi�
 ## Tính năng
 
 - Tách nền ảnh PNG, JPG, JPEG hoặc WEBP (tối đa 12 MB).
-- Chọn U²-Net, U²-Net kết hợp GrabCut để tinh chỉnh mặt nạ, hoặc Chroma key cho phông một màu.
+- **Không bắt buộc AI:** GrabCut (khung tự động) và Chroma key chạy bằng OpenCV/NumPy, không cần tải mô hình.
+- Tuỳ chọn AI (U²-Net qua rembg) chỉ dùng khi chọn phương pháp "AI".
 - Làm mềm viền, chọn nền màu hoặc ảnh nền.
 - Di chuyển, đổi kích thước chủ thể và chỉnh sáng, tương phản, bão hòa.
 - Tải ảnh kết quả PNG.
 
-Lần đầu tách nền có thể chậm vì rembg cần tải mô hình AI. Ảnh kết quả được lưu trong `BackgroundChanger/static/results`.
+Lần đầu chạy phương pháp AI có thể chậm vì rembg cần tải mô hình. Ảnh kết quả được lưu trong `BackgroundChanger/static/results`.
 
-Chroma key phù hợp với phông xanh hoặc phông màu đồng nhất; GrabCut chạy sau U²-Net và có thể xử lý lâu hơn chế độ AI thông thường.
+Chroma key phù hợp với phông xanh hoặc nền màu đồng nhất; GrabCut hoạt động tốt nhất khi đối tượng nằm gần trung tâm khung hình.
+
+## Interactive segmentation across algorithms
+
+The selection editor is available for every segmentation method. Use positive points to mark foreground, negative points to mark background, a rectangle to define an ROI, or a polygon to constrain the selected area. Brush tools create a sequence of foreground/background seed points.
+
+Supported methods in the method selector:
+
+- SAM 2: prompt-based object segmentation (requires the configured Transformers model and PyTorch).
+- U²-Net: AI-generated mask refined by the common selection prompts.
+- GrabCut: foreground/background seeds and optional rectangle initialization.
+- Chroma Key, Watershed, K-means, Otsu, Adaptive Threshold, and Contour: their algorithm-generated masks are refined using the same points, rectangle, and polygon constraints.
+
+For classical methods, interactive selection constrains/refines the algorithm's mask; it does not give those algorithms SAM 2's semantic understanding. Results therefore depend on image contrast, colors, and the quality of the initial mask.
