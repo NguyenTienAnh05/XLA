@@ -26,6 +26,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:'Be Vietnam Pro'
 .slider-control{margin:17px 0}.slider-label{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:600}.slider-label output{color:var(--blue);font-variant-numeric:tabular-nums}
 input[type=range]{width:100%;accent-color:var(--blue);margin:10px 0 0;cursor:pointer}
 .slider-control small{font-size:9px;color:var(--muted)}
+.field-control{display:grid;gap:7px;margin:14px 0;font-size:11px;font-weight:600}.field-control select{width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font:inherit}.field-control input[type=color]{width:100%;height:36px;padding:3px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer}.field-control small{font-size:9px;color:var(--muted);font-weight:400}.chroma-options[hidden]{display:none}
 .btn{border:0;border-radius:10px;padding:12px 15px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;transition:.2s}
 .btn:disabled{opacity:.45;cursor:not-allowed}.btn-primary{background:var(--blue);color:white}.btn-primary:hover:not(:disabled){background:var(--blue2);transform:translateY(-1px)}
 .btn-ghost{background:#f1f4fa;color:#526078}.full{width:100%;margin-top:10px}

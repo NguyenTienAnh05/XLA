@@ -33,8 +33,11 @@ Sau đó mở <http://127.0.0.1:5000>. Lần đầu chạy, cần cài thư vi�
 ## Tính năng
 
 - Tách nền ảnh PNG, JPG, JPEG hoặc WEBP (tối đa 12 MB).
+- Chọn U²-Net, U²-Net kết hợp GrabCut để tinh chỉnh mặt nạ, hoặc Chroma key cho phông một màu.
 - Làm mềm viền, chọn nền màu hoặc ảnh nền.
 - Di chuyển, đổi kích thước chủ thể và chỉnh sáng, tương phản, bão hòa.
 - Tải ảnh kết quả PNG.
 
 Lần đầu tách nền có thể chậm vì rembg cần tải mô hình AI. Ảnh kết quả được lưu trong `BackgroundChanger/static/results`.
+
+Chroma key phù hợp với phông xanh hoặc phông màu đồng nhất; GrabCut chạy sau U²-Net và có thể xử lý lâu hơn chế độ AI thông thường.

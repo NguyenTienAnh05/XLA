@@ -68,12 +68,34 @@
           </div>
         </div>
 
+        <div class="field-control">
+          <label for="methodSelect">Phương pháp tách nền</label>
+          <select id="methodSelect">
+            <option value="ai">AI (U²-Net)</option>
+            <option value="grabcut">AI + GrabCut tinh chỉnh</option>
+            <option value="chroma">Chroma key (phông một màu)</option>
+          </select>
+          <small id="methodHelp">AI tự nhận diện chủ thể trong ảnh.</small>
+        </div>
+
+        <div class="chroma-options" id="chromaOptions" hidden>
+          <div class="field-control">
+            <label for="keyColor">Màu phông cần xóa</label>
+            <input id="keyColor" type="color" value="#00ff00">
+          </div>
+          <div class="slider-control">
+            <div class="slider-label"><label for="keyTolerance">Độ gần màu cần xóa</label><output id="keyToleranceValue">75</output></div>
+            <input id="keyTolerance" type="range" min="10" max="220" step="5" value="75">
+            <small>Tăng nếu phông không đồng màu; giảm nếu chủ thể bị xóa nhầm.</small>
+          </div>
+        </div>
+
         <div class="slider-control">
           <div class="slider-label"><label for="feather">Làm mềm viền</label><output id="featherValue">1.2</output></div>
           <input id="feather" type="range" min="0" max="5" step="0.2" value="1.2">
           <small>Áp dụng khi tách nền.</small>
         </div>
-        <button class="btn btn-primary full" id="removeBtn">✦ Tách nền tự động</button>
+        <button class="btn btn-primary full" id="removeBtn">✦ Xử lý ảnh</button>
         <div class="status" id="status" role="status">Tải ảnh lên để bắt đầu.</div>
 
         <div class="divider"></div>
@@ -126,7 +148,7 @@
         </div>
       </section>
     </section>
-    <footer>Background Studio · Python 3.12 · Flask · rembg · OpenCV</footer>
+  <footer>Background Studio · Python 3.12 · Flask · rembg · OpenCV · Chroma key · GrabCut</footer>
   </main>
   <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>

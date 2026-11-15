@@ -10,6 +10,9 @@ const ctx = canvas.getContext("2d");
 const emptyState = document.getElementById("emptyState");
 const statusBox = document.getElementById("status");
 const previewState = document.getElementById("previewState");
+const methodSelect = document.getElementById("methodSelect");
+const chromaOptions = document.getElementById("chromaOptions");
+const methodHelp = document.getElementById("methodHelp");
 
 let originalFile = null;
 let subjectImage = null;
@@ -20,8 +23,20 @@ let subjectY = 0.52;
 let dragging = false;
 let lastPointer = null;
 
-const controls = ["scale", "brightness", "contrast", "saturation", "bgBlur", "feather"];
-const defaults = {scale:100, brightness:100, contrast:100, saturation:100, bgBlur:0, feather:1.2};
+const controls = ["scale", "brightness", "contrast", "saturation", "bgBlur", "feather", "keyTolerance"];
+const defaults = {scale:100, brightness:100, contrast:100, saturation:100, bgBlur:0, feather:1.2, keyTolerance:75};
+
+function updateMethodOptions() {
+  const method = methodSelect.value;
+  chromaOptions.hidden = method !== "chroma";
+  const labels = {
+    ai: ["✦ Tách nền bằng AI", "AI tự nhận diện chủ thể trong ảnh."],
+    grabcut: ["✦ Tách nền + GrabCut", "GrabCut dùng mặt nạ AI làm điểm khởi đầu để tinh chỉnh; xử lý lâu hơn."],
+    chroma: ["✦ Xóa phông Chroma key", "Phù hợp nhất với phông xanh hoặc nền một màu đồng nhất."]
+  };
+  removeBtn.textContent = labels[method][0];
+  methodHelp.textContent = labels[method][1];
+}
 
 function setStatus(message, type="") {
   statusBox.textContent = message;
@@ -43,6 +58,7 @@ function updateOutputs() {
     let suffix = "%";
     if (id === "bgBlur") suffix = " px";
     if (id === "feather") suffix = "";
+    if (id === "keyTolerance") suffix = "";
     out.value = el.value + suffix;
     out.textContent = el.value + suffix;
   }
@@ -95,7 +111,7 @@ async function setSubjectFile(file) {
   document.getElementById("subjectName").textContent = file.name;
   previewState.textContent = "Chờ tách nền";
   render();
-  setStatus("Đã tải ảnh. Nhấn “Tách nền tự động” để xử lý.");
+  setStatus("Đã tải ảnh. Chọn phương pháp rồi nhấn nút xử lý ảnh.");
 }
 async function setBackgroundFile(file) {
   if (!file) return;
@@ -138,6 +154,7 @@ controls.forEach(id => document.getElementById(id).addEventListener("input", () 
   updateOutputs();
   render();
 }));
+methodSelect.addEventListener("change", updateMethodOptions);
 
 removeBtn.addEventListener("click", async () => {
   if (!originalFile) {
@@ -146,10 +163,16 @@ removeBtn.addEventListener("click", async () => {
   }
   removeBtn.disabled = true;
   removeBtn.textContent = "Đang xử lý...";
-  setStatus("AI đang phân tích ảnh và tách nền. Lần chạy đầu có thể mất thêm thời gian.");
+  const method = methodSelect.value;
+  setStatus(method === "chroma"
+    ? "Đang tạo mặt nạ từ màu phông đã chọn..."
+    : "Đang phân tích ảnh và tách nền. Lần chạy đầu có thể mất thêm thời gian.");
   const form = new FormData();
   form.append("image", originalFile);
   form.append("feather", document.getElementById("feather").value);
+  form.append("method", method);
+  form.append("key_color", document.getElementById("keyColor").value);
+  form.append("key_tolerance", document.getElementById("keyTolerance").value);
   try {
     const response = await fetch("/api/remove", {method:"POST", body:form});
     const data = await response.json();
@@ -157,13 +180,13 @@ removeBtn.addEventListener("click", async () => {
     subjectImage = await loadImage(data.image_url + "?t=" + Date.now());
     subjectX = 0.5; subjectY = 0.52;
     previewState.textContent = "Đã tách nền";
-    setStatus("Tách nền thành công. Bạn có thể chọn nền và tinh chỉnh ảnh.", "ok");
+    setStatus("Xử lý thành công. Bạn có thể chọn nền và tinh chỉnh ảnh.", "ok");
     render();
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
     removeBtn.disabled = false;
-    removeBtn.textContent = "✦ Tách nền tự động";
+    updateMethodOptions();
   }
 });
 
@@ -207,4 +230,5 @@ canvas.addEventListener("pointerup", () => { dragging = false; lastPointer = nul
 canvas.addEventListener("pointercancel", () => { dragging = false; lastPointer = null; });
 
 updateOutputs();
+updateMethodOptions();
 render();
