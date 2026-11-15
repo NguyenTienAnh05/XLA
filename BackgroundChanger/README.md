@@ -18,25 +18,17 @@ BackgroundChanger/
 
 `app.py` lắp ghép các phần; `routes.py` nhận yêu cầu từ trình duyệt; `image_processing` thực hiện việc xử lý ảnh; `config.py` gom các thiết lập dùng chung.
 
-## Chạy nhanh trên Windows
+## Chạy trên Windows
 
-Nhấp đúp vào **`Chay_chuong_trinh.bat`** ở thư mục dự án. Lần đầu chạy, chương trình sẽ tạo môi trường Python và cài các thư viện cần thiết; bước này cần Internet. Sau đó trình duyệt mở tại:
-
-<http://127.0.0.1:5000>
-
-Để tắt chương trình, đóng cửa sổ dòng lệnh đang chạy.
-
-Nếu Windows báo không tìm thấy Python, hãy cài Python 3.12 và bật tùy chọn **Add Python to PATH**, rồi chạy lại tệp `.bat`.
-
-## Chạy thủ công
-
-Từ thư mục dự án:
+Mở Terminal tại thư mục dự án và chạy:
 
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r BackgroundChanger\requirements.txt
 .venv\Scripts\python.exe -m BackgroundChanger.app
 ```
+
+Sau đó mở <http://127.0.0.1:5000>. Lần đầu chạy, cần cài thư viện theo hướng dẫn ở trên; bước cài đặt cần Internet. Dừng ứng dụng bằng `Ctrl+C` trong Terminal.
 
 ## Tính năng
 

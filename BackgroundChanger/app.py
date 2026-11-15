@@ -1,5 +1,13 @@
 """Flask application factory and local development entry point."""
 
+# Allow both `python -m BackgroundChanger.app` and direct IDE execution of this file.
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = "BackgroundChanger"
+
 from flask import Flask, jsonify
 
 from .config import DEBUG, HOST, MAX_CONTENT_LENGTH, PORT, RESULT_DIR, UPLOAD_DIR
