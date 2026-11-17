@@ -16,7 +16,7 @@
     <section class="hero">
       <div class="eyebrow">IMAGE EDITING WORKSPACE</div>
       <h1>Thay đổi nền ảnh <span>trong vài bước</span></h1>
-      <p>Tự động tách chủ thể, chọn nền mới và tinh chỉnh kết quả ngay trên trình duyệt.</p>
+      <p>Tự động tách chủ thể hoặc tự chọn chính xác vùng cần giữ lại bằng AI.</p>
     </section>
 
     <section class="workspace">
@@ -39,43 +39,55 @@
         <div class="file-name" id="subjectName">Chưa có ảnh được chọn</div>
 
         <div class="divider"></div>
+
         <div class="panel-heading">
           <div>
             <div class="step">BƯỚC 02</div>
             <h2>Nền mới</h2>
           </div>
         </div>
+
         <label class="upload-zone compact" for="backgroundInput" id="backgroundDrop">
           <div class="upload-icon">＋</div>
           <strong>Tải ảnh nền mới</strong>
           <span>Hoặc chọn một màu nền bên dưới</span>
         </label>
         <input type="file" id="backgroundInput" accept="image/png,image/jpeg,image/webp" hidden>
+
         <div class="swatches" aria-label="Màu nền có sẵn">
-          <button class="swatch selected" data-color="#e9edf5" style="--swatch:#e9edf5" title="Xám sáng"></button>
-          <button class="swatch" data-color="#dcefe8" style="--swatch:#dcefe8" title="Xanh nhạt"></button>
-          <button class="swatch" data-color="#f5e5d7" style="--swatch:#f5e5d7" title="Be"></button>
-          <button class="swatch" data-color="#26354a" style="--swatch:#26354a" title="Xanh đậm"></button>
-          <button class="swatch" data-color="#ffffff" style="--swatch:#ffffff" title="Trắng"></button>
+          <button class="swatch selected" data-color="#e9edf5" style="--swatch:#e9edf5" title="Xám sáng" type="button"></button>
+          <button class="swatch" data-color="#dcefe8" style="--swatch:#dcefe8" title="Xanh nhạt" type="button"></button>
+          <button class="swatch" data-color="#f5e5d7" style="--swatch:#f5e5d7" title="Be" type="button"></button>
+          <button class="swatch" data-color="#26354a" style="--swatch:#26354a" title="Xanh đậm" type="button"></button>
+          <button class="swatch" data-color="#ffffff" style="--swatch:#ffffff" title="Trắng" type="button"></button>
         </div>
         <div class="file-name" id="backgroundName">Nền màu xám sáng</div>
 
         <div class="divider"></div>
+
         <div class="panel-heading">
           <div>
             <div class="step">BƯỚC 03</div>
-            <h2>Tinh chỉnh</h2>
+            <h2>Phương pháp tách nền</h2>
           </div>
         </div>
 
         <div class="field-control">
-          <label for="methodSelect">Phương pháp tách nền</label>
+          <label for="methodSelect">Chế độ xử lý</label>
           <select id="methodSelect">
-            <option value="ai">AI (U²-Net)</option>
-            <option value="grabcut">AI + GrabCut tinh chỉnh</option>
-            <option value="chroma">Chroma key (phông một màu)</option>
+            <option value="interactive">SAM 2 - AI tương tác</option>
+            <option value="ai">U²-Net - AI tự động</option>
+            <option value="grabcut">GrabCut - Seed / vùng chọn</option>
+            <option value="chroma">Chroma Key</option>
+            <option value="watershed">Watershed</option>
+            <option value="kmeans">K-means</option>
+            <option value="otsu">Otsu Threshold</option>
+            <option value="adaptive">Adaptive Threshold</option>
+            <option value="contour">Contour</option>
           </select>
-          <small id="methodHelp">AI tự nhận diện chủ thể trong ảnh.</small>
+          <small id="methodHelp">
+            Chọn thuật toán, sau đó dùng điểm, khung hoặc polygon để hướng dẫn vùng cần giữ và vùng nền.
+          </small>
         </div>
 
         <div class="chroma-options" id="chromaOptions" hidden>
@@ -84,52 +96,152 @@
             <input id="keyColor" type="color" value="#00ff00">
           </div>
           <div class="slider-control">
-            <div class="slider-label"><label for="keyTolerance">Độ gần màu cần xóa</label><output id="keyToleranceValue">75</output></div>
+            <div class="slider-label">
+              <label for="keyTolerance">Độ gần màu cần xóa</label>
+              <output id="keyToleranceValue">75</output>
+            </div>
             <input id="keyTolerance" type="range" min="10" max="220" step="5" value="75">
             <small>Tăng nếu phông không đồng màu; giảm nếu chủ thể bị xóa nhầm.</small>
           </div>
         </div>
 
         <div class="slider-control">
-          <div class="slider-label"><label for="feather">Làm mềm viền</label><output id="featherValue">1.2</output></div>
+          <div class="slider-label">
+            <label for="feather">Làm mềm viền</label>
+            <output id="featherValue">1.2</output>
+          </div>
           <input id="feather" type="range" min="0" max="5" step="0.2" value="1.2">
-          <small>Áp dụng khi tách nền.</small>
+          <small>Giảm nếu muốn viền sắc nét hơn.</small>
         </div>
-        <button class="btn btn-primary full" id="removeBtn">✦ Xử lý ảnh</button>
+
+        <button class="btn btn-primary full" id="removeBtn" type="button">
+          Phân đoạn đối tượng
+        </button>
         <div class="status" id="status" role="status">Tải ảnh lên để bắt đầu.</div>
 
         <div class="divider"></div>
+
         <div class="slider-control">
-          <div class="slider-label"><label for="scale">Kích thước chủ thể</label><output id="scaleValue">100%</output></div>
+          <div class="slider-label">
+            <label for="scale">Kích thước chủ thể</label>
+            <output id="scaleValue">100%</output>
+          </div>
           <input id="scale" type="range" min="30" max="160" value="100">
         </div>
+
         <div class="slider-control">
-          <div class="slider-label"><label for="brightness">Độ sáng</label><output id="brightnessValue">100%</output></div>
+          <div class="slider-label">
+            <label for="brightness">Độ sáng</label>
+            <output id="brightnessValue">100%</output>
+          </div>
           <input id="brightness" type="range" min="50" max="150" value="100">
         </div>
+
         <div class="slider-control">
-          <div class="slider-label"><label for="contrast">Độ tương phản</label><output id="contrastValue">100%</output></div>
+          <div class="slider-label">
+            <label for="contrast">Độ tương phản</label>
+            <output id="contrastValue">100%</output>
+          </div>
           <input id="contrast" type="range" min="50" max="150" value="100">
         </div>
+
         <div class="slider-control">
-          <div class="slider-label"><label for="saturation">Độ bão hòa</label><output id="saturationValue">100%</output></div>
+          <div class="slider-label">
+            <label for="saturation">Độ bão hòa</label>
+            <output id="saturationValue">100%</output>
+          </div>
           <input id="saturation" type="range" min="0" max="200" value="100">
         </div>
+
         <div class="slider-control">
-          <div class="slider-label"><label for="bgBlur">Làm mờ nền</label><output id="bgBlurValue">0 px</output></div>
+          <div class="slider-label">
+            <label for="bgBlur">Làm mờ nền</label>
+            <output id="bgBlurValue">0 px</output>
+          </div>
           <input id="bgBlur" type="range" min="0" max="12" value="0">
         </div>
-        <button class="btn btn-ghost full" id="resetBtn">↺ Đặt lại chỉnh sửa</button>
+
+        <button class="btn btn-ghost full" id="resetBtn" type="button">
+          Đặt lại chỉnh sửa
+        </button>
       </aside>
 
       <section class="panel preview-panel">
         <div class="preview-header">
           <div>
+            <div class="step">INTERACTIVE SEGMENTATION</div>
+            <h2>Chọn đối tượng cần tách</h2>
+          </div>
+          <span class="pill" id="segmentState">Chưa chọn ảnh</span>
+        </div>
+
+        <section class="segment-editor" id="segmentEditor" hidden>
+          <div class="segment-instructions">
+            <strong>Hướng dẫn chọn vùng</strong>
+            <p>
+              Chọn công cụ rồi thao tác trực tiếp trên ảnh. Điểm xanh là vùng cần giữ,
+              điểm đỏ là vùng cần loại bỏ.
+            </p>
+          </div>
+
+          <div class="segment-toolbar">
+            <button class="tool-button active" data-tool="point_fg" type="button">
+              + Điểm đối tượng
+            </button>
+            <button class="tool-button" data-tool="point_bg" type="button">
+              − Điểm nền
+            </button>
+            <button class="tool-button" data-tool="rect" type="button">
+              Khoanh chữ nhật
+            </button>
+            <button class="tool-button" data-tool="polygon" type="button">
+              Vẽ polygon
+            </button>
+            <button class="tool-button" data-tool="brush_fg" type="button">
+              Cọ giữ
+            </button>
+            <button class="tool-button" data-tool="brush_bg" type="button">
+              Cọ xóa
+            </button>
+          </div>
+
+          <div class="segment-actions">
+            <button class="btn btn-small btn-ghost" id="finishPolygonBtn" type="button">
+              Hoàn tất polygon
+            </button>
+            <button class="btn btn-small btn-ghost" id="undoSegmentBtn" type="button">
+              Hoàn tác
+            </button>
+            <button class="btn btn-small btn-ghost" id="clearSegmentBtn" type="button">
+              Xóa lựa chọn
+            </button>
+          </div>
+
+          <div class="segment-canvas-wrap">
+            <canvas id="segmentCanvas"></canvas>
+            <div class="segment-empty" id="segmentEmpty">
+              Tải ảnh chủ thể để bắt đầu chọn đối tượng.
+            </div>
+          </div>
+
+          <div class="segment-footer">
+            <span id="promptSummary">Chưa có điểm hoặc vùng chọn.</span>
+            <button class="btn btn-primary" id="applySegmentationBtn" type="button" disabled>
+              Dùng kết quả này
+            </button>
+          </div>
+        </section>
+
+        <div class="divider"></div>
+
+        <div class="preview-header">
+          <div>
             <div class="step">LIVE PREVIEW</div>
-            <h2>Xem trước kết quả</h2>
+            <h2>Xem trước ảnh sau khi thay nền</h2>
           </div>
           <span class="pill success" id="previewState">Chưa tách nền</span>
         </div>
+
         <div class="canvas-wrap" id="canvasWrap">
           <canvas id="previewCanvas" width="1200" height="800"></canvas>
           <div class="empty-state" id="emptyState">
@@ -138,18 +250,30 @@
             <span>Ảnh sau khi xử lý sẽ xuất hiện tại đây.</span>
           </div>
         </div>
+
         <div class="preview-tools">
-          <span>Di chuyển chủ thể bằng cách kéo trực tiếp trên ảnh.</span>
-          <button class="btn btn-primary" id="downloadBtn" disabled>↓ Tải ảnh kết quả</button>
+          <span>Di chuyển chủ thể bằng cách kéo trực tiếp trên ảnh xem trước.</span>
+          <button class="btn btn-primary" id="downloadBtn" type="button" disabled>
+            Tải ảnh kết quả
+          </button>
         </div>
+
         <div class="tips">
           <strong>Mẹo để có kết quả tốt</strong>
-          <p>Ưu tiên ảnh có chủ thể rõ ràng, đủ sáng và không bị che khuất quá nhiều. Ảnh nền mới nên có tỷ lệ gần với khung hình mong muốn.</p>
+          <p>
+            Bắt đầu bằng một điểm xanh trên chủ thể. Nếu AI lấy nhầm vùng nền,
+            thêm điểm đỏ vào vùng đó. Có thể khoanh khung để giới hạn đối tượng
+            hoặc dùng polygon để giới hạn vùng cần giữ.
+          </p>
         </div>
       </section>
     </section>
-  <footer>Background Studio · Python 3.12 · Flask · rembg · OpenCV · Chroma key · GrabCut</footer>
+
+    <footer>
+      Background Studio · Python · Flask · SAM 2 · PyTorch · OpenCV · rembg
+    </footer>
   </main>
+
   <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

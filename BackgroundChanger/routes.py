@@ -1,22 +1,16 @@
 """HTTP routes for the Background Studio web application."""
 
+import json
 import re
 from uuid import uuid4
 
-from flask import (
-    Blueprint,
-    current_app,
-    jsonify,
-    render_template,
-    request,
-    send_from_directory,
-)
+from flask import Blueprint, current_app, jsonify, render_template, request, send_from_directory
 from PIL import Image, ImageOps
 
 from .config import ALLOWED_EXTENSIONS, RESULT_DIR
-from .image_processing import (
-    remove_chroma_background,
-    remove_image_background,
+from .image_processing import get_device, get_sam2, segment_with_method
+from .image_processing.background_removal import (
+    remove_chroma_background, remove_image_background,
     remove_image_background_grabcut,
 )
 
@@ -25,6 +19,49 @@ web = Blueprint("web", __name__)
 
 def _allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _read_uploaded_image():
+    if "image" not in request.files:
+        raise ValueError("Bạn chưa chọn ảnh.")
+    uploaded = request.files["image"]
+    if not uploaded or not uploaded.filename:
+        raise ValueError("Tệp ảnh không hợp lệ.")
+    if not _allowed_file(uploaded.filename):
+        raise ValueError("Chỉ hỗ trợ PNG, JPG, JPEG và WEBP.")
+    try:
+        source = Image.open(uploaded.stream)
+        source = ImageOps.exif_transpose(source).convert("RGB")
+        source.load()
+        return source
+    except Exception as exc:
+        raise ValueError("Không thể đọc tệp ảnh đã tải lên.") from exc
+
+
+def _save_result(image: Image.Image) -> str:
+    name = f"{uuid4().hex}.png"
+    image.save(RESULT_DIR / name, format="PNG", optimize=True)
+    return name
+
+
+def _parse_prompts():
+    try:
+        value = json.loads(request.form.get("prompts", "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("Dữ liệu vùng chọn không hợp lệ.") from exc
+    if not isinstance(value, dict):
+        raise ValueError("Dữ liệu vùng chọn không hợp lệ.")
+    return value
+
+
+def _options():
+    feather = max(0.0, min(float(request.form.get("feather", "1.2")), 5.0))
+    method = request.form.get("method", "ai")
+    key_color = request.form.get("key_color", "#00ff00")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", key_color):
+        raise ValueError("Mã màu Chroma key không hợp lệ.")
+    tolerance = max(10.0, min(float(request.form.get("key_tolerance", "75")), 220.0))
+    return method, feather, key_color, tolerance
 
 
 @web.get("/")
@@ -37,46 +74,79 @@ def health():
     return jsonify({"status": "ok", "message": "Background Changer is running"})
 
 
+@web.get("/api/device")
+def device_info():
+    import torch
+    return jsonify({
+        "device": get_device(), "cuda_available": torch.cuda.is_available(),
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "sam2_model": current_app.config.get("SAM2_MODEL_ID", "facebook/sam2.1-hiera-small"),
+    })
+
+
+@web.post("/api/segment")
+def interactive_segment():
+    """Interactive mask endpoint shared by all segmentation methods."""
+    try:
+        source = _read_uploaded_image()
+        prompts = _parse_prompts()
+        method, feather, key_color, tolerance = _options()
+        mask, rgba = segment_with_method(source, prompts, method, feather, key_color, tolerance)
+        mask_name, image_name = _save_result(mask), _save_result(rgba)
+        return jsonify({
+            "success": True, "mask_url": f"/results/{mask_name}",
+            "image_url": f"/results/{image_name}", "width": source.width,
+            "height": source.height, "method": method,
+        })
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        current_app.logger.exception("Interactive segmentation failed")
+        return jsonify({"error": str(exc)}), 500
+    except Exception as exc:
+        current_app.logger.exception("Interactive segmentation failed")
+        return jsonify({"error": "Không thể phân đoạn ảnh.", "detail": str(exc)}), 500
+
+
 @web.post("/api/remove")
 def remove_background():
-    if "image" not in request.files:
-        return jsonify({"error": "Bạn chưa chọn ảnh."}), 400
-
-    uploaded_file = request.files["image"]
-    if not uploaded_file or not uploaded_file.filename:
-        return jsonify({"error": "Tệp ảnh không hợp lệ."}), 400
-    if not _allowed_file(uploaded_file.filename):
-        return jsonify({"error": "Chỉ hỗ trợ PNG, JPG, JPEG và WEBP."}), 400
-
+    """Automatic removal remains available; prompts enable interactive refinement."""
     try:
-        source = Image.open(uploaded_file.stream)
-        source = ImageOps.exif_transpose(source).convert("RGB")
-        feather = float(request.form.get("feather", "1.2"))
-        feather = max(0.0, min(feather, 5.0))
-        method = request.form.get("method", "ai")
-
-        if method == "ai":
+        source = _read_uploaded_image()
+        method, feather, key_color, tolerance = _options()
+        raw_prompts = request.form.get("prompts")
+        if raw_prompts:
+            prompts = _parse_prompts()
+            _, result = segment_with_method(source, prompts, method, feather, key_color, tolerance)
+        elif method == "ai":
             result = remove_image_background(source, feather)
         elif method == "grabcut":
             result = remove_image_background_grabcut(source, feather)
         elif method == "chroma":
-            key_color = request.form.get("key_color", "#00ff00")
-            if not re.fullmatch(r"#[0-9a-fA-F]{6}", key_color):
-                return jsonify({"error": "Mã màu Chroma key không hợp lệ."}), 400
-            tolerance = float(request.form.get("key_tolerance", "75"))
-            tolerance = max(10.0, min(tolerance, 220.0))
             result = remove_chroma_background(source, key_color, tolerance, feather)
+        elif method == "interactive":
+            raise ValueError("SAM 2 cần có điểm hoặc vùng chọn. Hãy dùng công cụ chọn đối tượng.")
         else:
-            return jsonify({"error": "Phương pháp tách nền không hợp lệ."}), 400
-
-        output_name = f"{uuid4().hex}.png"
-        result.save(RESULT_DIR / output_name, format="PNG", optimize=True)
-
-        return jsonify({
-            "success": True,
-            "image_url": f"/results/{output_name}",
-            "filename": output_name,
-        })
+            # Classical methods are also selectable as automatic modes.
+            from .image_processing.background_removal import (
+                remove_by_otsu, remove_by_adaptive, remove_by_watershed,
+                remove_by_kmeans, remove_by_contour,
+            )
+            methods = {
+                "otsu": remove_by_otsu, "adaptive": remove_by_adaptive,
+                "watershed": remove_by_watershed, "kmeans": remove_by_kmeans,
+                "contour": remove_by_contour,
+            }
+            if method not in methods:
+                raise ValueError("Phương pháp tách nền không hợp lệ.")
+            result = methods[method](source, feather)
+        name = _save_result(result)
+        return jsonify({"success": True, "image_url": f"/results/{name}", "filename": name})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        current_app.logger.exception("Background removal failed")
+        return jsonify({"error": str(exc)}), 500
     except Exception as exc:
         current_app.logger.exception("Background removal failed")
         return jsonify({
