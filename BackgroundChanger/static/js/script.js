@@ -6,6 +6,7 @@ const backgroundDrop = document.getElementById("backgroundDrop");
 const removeBtn = document.getElementById("removeBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const resetBtn = document.getElementById("resetBtn");
+const restoreOriginalBtn = document.getElementById("restoreOriginalBtn");
 
 const canvas = document.getElementById("previewCanvas");
 const ctx = canvas.getContext("2d");
@@ -35,6 +36,7 @@ let originalFile = null;
 let originalImage = null;
 let subjectImage = null;
 let backgroundImage = null;
+let showOriginalImage = false;
 let backgroundColor = "#e9edf5";
 
 let subjectX = 0.5;
@@ -61,6 +63,7 @@ let segmentationResult = null;
 let segmentationHistory = [];
 let segmentationBusy = false;
 let segmentRequestId = 0;
+let removeRequestId = 0;
 
 const controls = [
     "scale",
@@ -68,6 +71,7 @@ const controls = [
     "contrast",
     "saturation",
     "bgBlur",
+    "opacity",
     "feather",
     "keyTolerance"
 ];
@@ -78,6 +82,7 @@ const defaults = {
     contrast: 100,
     saturation: 100,
     bgBlur: 0,
+    opacity: 100,
     feather: 1.2,
     keyTolerance: 75
 };
@@ -174,8 +179,52 @@ function drawCover(image, blur = 0) {
     ctx.restore();
 }
 
+function drawContain(image) {
+    const scale = Math.min(
+        canvas.width / image.width,
+        canvas.height / image.height
+    );
+
+    const width = image.width * scale;
+    const height = image.height * scale;
+
+    ctx.drawImage(
+        image,
+        (canvas.width - width) / 2,
+        (canvas.height - height) / 2,
+        width,
+        height
+    );
+}
+
+/**
+ * Alpha-composite a transparent foreground over the already-rendered background.
+ * Canvas uses the Porter-Duff source-over operation:
+ * C_out = C_fg * alpha_fg + C_bg * (1 - alpha_fg)
+ * The opacity control multiplies the per-pixel alpha produced by segmentation.
+ */
+function drawAlphaBlended(image, x, y, width, height, opacity = 1) {
+    const safeOpacity = Math.max(0, Math.min(1, Number(opacity)));
+
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = safeOpacity;
+    ctx.drawImage(image, x, y, width, height);
+    ctx.restore();
+}
+
 function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (showOriginalImage && originalImage) {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawContain(originalImage);
+
+        emptyState.style.display = "none";
+        downloadBtn.disabled = false;
+        return;
+    }
 
     if (backgroundImage) {
         drawCover(
@@ -213,12 +262,13 @@ function render() {
             `saturate(${document.getElementById("saturation").value}%)`
         ].join(" ");
 
-        ctx.drawImage(
+        drawAlphaBlended(
             subjectImage,
             x,
             y,
             width,
-            height
+            height,
+            Number(document.getElementById("opacity").value) / 100
         );
 
         ctx.restore();
@@ -761,6 +811,7 @@ function applySegmentation() {
     }
 
     subjectImage = segmentationResult;
+    showOriginalImage = false;
 
     subjectX = 0.5;
     subjectY = 0.52;
@@ -794,19 +845,31 @@ async function setSubjectFile(file) {
         return;
     }
 
-    try {
-        originalFile = file;
-        subjectImage = null;
+    let objectUrl = null;
 
-        const objectUrl = URL.createObjectURL(file);
-        originalImage = await loadImage(objectUrl);
+    try {
+        objectUrl = URL.createObjectURL(file);
+        const loadedImage = await loadImage(objectUrl);
+
+        // Only invalidate existing processing after the new file has loaded.
+        segmentRequestId++;
+        removeRequestId++;
+        segmentationBusy = false;
+        removeBtn.disabled = false;
+
+        originalFile = file;
+        originalImage = loadedImage;
+        subjectImage = null;
+        showOriginalImage = false;
 
         segmentCanvas.width = originalImage.naturalWidth;
         segmentCanvas.height = originalImage.naturalHeight;
 
         resetSegmentation();
+        resetAdjustmentControls();
 
         document.getElementById("subjectName").textContent = file.name;
+        restoreOriginalBtn.disabled = false;
 
         previewState.textContent = "Chờ tách nền";
         previewState.className = "pill";
@@ -821,10 +884,12 @@ async function setSubjectFile(file) {
             "Đã tải ảnh. Chọn công cụ và click vào đối tượng cần tách."
         );
 
-        URL.revokeObjectURL(objectUrl);
-
     } catch (error) {
         setStatus("Không thể mở ảnh này.", "error");
+    } finally {
+        if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+        }
     }
 }
 
@@ -1094,6 +1159,7 @@ removeBtn.addEventListener("click", async () => {
     }
 
     const method = methodSelect.value;
+    const requestId = ++removeRequestId;
 
     removeBtn.disabled = true;
 
@@ -1136,9 +1202,20 @@ removeBtn.addEventListener("click", async () => {
             );
         }
 
-        subjectImage = await loadImage(
+        if (requestId !== removeRequestId) {
+            return;
+        }
+
+        const loadedSubject = await loadImage(
             data.image_url + "?t=" + Date.now()
         );
+
+        if (requestId !== removeRequestId) {
+            return;
+        }
+
+        subjectImage = loadedSubject;
+        showOriginalImage = false;
 
         subjectX = 0.5;
         subjectY = 0.52;
@@ -1154,35 +1231,95 @@ removeBtn.addEventListener("click", async () => {
         render();
 
     } catch (error) {
-        setStatus(error.message, "error");
+        if (requestId === removeRequestId) {
+            setStatus(error.message, "error");
+        }
 
     } finally {
-        removeBtn.disabled = false;
+        if (requestId === removeRequestId) {
+            removeBtn.disabled = false;
+        }
     }
 });
 
-resetBtn.addEventListener("click", () => {
+function resetAdjustmentControls() {
     for (const [id, value] of Object.entries(defaults)) {
         document.getElementById(id).value = value;
     }
 
     subjectX = 0.5;
     subjectY = 0.52;
-
     updateOutputs();
+}
+
+function restoreOriginalImage() {
+    if (!originalFile || !originalImage) {
+        setStatus("Vui lòng tải ảnh chủ thể trước.", "error");
+        return;
+    }
+
+    // Invalidate every in-flight request so an older result cannot replace
+    // the original image after the user has restored it.
+    segmentRequestId++;
+    removeRequestId++;
+    segmentationBusy = false;
+
+    subjectImage = null;
+    showOriginalImage = true;
+    resetSegmentation();
+    resetAdjustmentControls();
+
+    removeBtn.disabled = false;
+    previewState.textContent = "Ảnh gốc";
+    previewState.className = "pill";
+    segmentState.textContent = "Đã khôi phục ảnh gốc";
+    segmentState.className = "pill";
+    applySegmentationBtn.disabled = true;
+
+    setStatus(
+        "Đã khôi phục ảnh gốc. Nền ban đầu được giữ nguyên; các kết quả và vùng chọn phân đoạn đã được xóa.",
+        "ok"
+    );
+
+    render();
+    renderSegmentEditor();
+}
+
+restoreOriginalBtn.addEventListener("click", restoreOriginalImage);
+
+resetBtn.addEventListener("click", () => {
+    resetAdjustmentControls();
+
+    if (showOriginalImage) {
+        render();
+        return;
+    }
+
     render();
 });
 
+
 downloadBtn.addEventListener("click", () => {
+    if (showOriginalImage && originalFile) {
+        const originalUrl = URL.createObjectURL(originalFile);
+        const originalLink = document.createElement("a");
+        const originalName = originalFile.name.replace(/\\.[^.]+$/, "");
+
+        originalLink.download = `${originalName}-original${originalFile.name.match(/\\.[^.]+$/)?.[0] || ".png"}`;
+        originalLink.href = originalUrl;
+        originalLink.click();
+
+        setTimeout(() => URL.revokeObjectURL(originalUrl), 1000);
+        return;
+    }
+
     if (!subjectImage) {
         return;
     }
 
     const link = document.createElement("a");
-
     link.download = "background-studio-result.png";
     link.href = canvas.toDataURL("image/png");
-
     link.click();
 });
 
@@ -1196,7 +1333,7 @@ function previewPointerPosition(event) {
 }
 
 canvas.addEventListener("pointerdown", event => {
-    if (!subjectImage) {
+    if (!subjectImage || showOriginalImage) {
         return;
     }
 

@@ -131,6 +131,15 @@
 
         <div class="slider-control">
           <div class="slider-label">
+            <label for="opacity">Độ trong suốt chủ thể (Alpha Blending)</label>
+            <output id="opacityValue">100%</output>
+          </div>
+          <input id="opacity" type="range" min="0" max="100" step="1" value="100">
+          <small>Điều chỉnh mức hòa trộn chủ thể với nền mới. 100% giữ nguyên alpha của mask; 0% ẩn hoàn toàn chủ thể.</small>
+        </div>
+
+        <div class="slider-control">
+          <div class="slider-label">
             <label for="brightness">Độ sáng</label>
             <output id="brightnessValue">100%</output>
           </div>
@@ -164,6 +173,12 @@
         <button class="btn btn-ghost full" id="resetBtn" type="button">
           Đặt lại chỉnh sửa
         </button>
+        <button class="btn btn-ghost full" id="restoreOriginalBtn" type="button" disabled>
+          Khôi phục ảnh gốc
+        </button>
+        <small class="reset-help">
+          Đặt lại chỉnh sửa giữ nguyên chủ thể đã tách. Khôi phục ảnh gốc sẽ xóa kết quả tách nền và hiển thị lại ảnh vừa tải lên.
+        </small>
       </aside>
 
       <section class="panel preview-panel">
