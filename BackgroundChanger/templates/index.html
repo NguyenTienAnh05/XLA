@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -93,8 +94,13 @@
         <div class="chroma-options" id="chromaOptions" hidden>
           <div class="field-control">
             <label for="keyColor">Màu phông cần xóa</label>
-            <input id="keyColor" type="color" value="#00ff00">
+            <div class="color-picker-row">
+              <input id="keyColor" type="color" value="#00ff00">
+              <span id="keyColorValue">#00FF00</span>
+            </div>
+            <small>Click công cụ lấy màu rồi chọn trực tiếp một pixel trên ảnh gốc.</small>
           </div>
+
           <div class="slider-control">
             <div class="slider-label">
               <label for="keyTolerance">Độ gần màu cần xóa</label>
@@ -126,7 +132,16 @@
             <label for="scale">Kích thước chủ thể</label>
             <output id="scaleValue">100%</output>
           </div>
-          <input id="scale" type="range" min="30" max="160" value="100">
+          <input type="range" id="scale" min="30" max="160" value="100">
+        </div>
+
+        <div class="slider-control">
+          <div class="slider-label">
+            <label for="opacity">Độ trong suốt chủ thể (Alpha Blending)</label>
+            <output id="opacityValue">100%</output>
+          </div>
+          <input id="opacity" type="range" min="0" max="100" step="1" value="100">
+          <small>Điều chỉnh mức hòa trộn chủ thể với nền mới. 100% giữ nguyên alpha của mask; 0% ẩn hoàn toàn chủ thể.</small>
         </div>
 
         <div class="slider-control">
@@ -164,6 +179,12 @@
         <button class="btn btn-ghost full" id="resetBtn" type="button">
           Đặt lại chỉnh sửa
         </button>
+        <button class="btn btn-ghost full" id="restoreOriginalBtn" type="button" disabled>
+          Khôi phục ảnh gốc
+        </button>
+        <small class="reset-help">
+          Đặt lại chỉnh sửa giữ nguyên chủ thể đã tách. Khôi phục ảnh gốc sẽ xóa kết quả tách nền và hiển thị lại ảnh vừa tải lên.
+        </small>
       </aside>
 
       <section class="panel preview-panel">
@@ -180,7 +201,7 @@
             <strong>Hướng dẫn chọn vùng</strong>
             <p>
               Chọn công cụ rồi thao tác trực tiếp trên ảnh. Điểm xanh là vùng cần giữ,
-              điểm đỏ là vùng cần loại bỏ.
+              điểm đỏ là vùng cần loại bỏ. Với Chroma Key, có thể lấy màu phông bằng cách click trực tiếp.
             </p>
           </div>
 
@@ -202,6 +223,9 @@
             </button>
             <button class="tool-button" data-tool="brush_bg" type="button">
               Cọ xóa
+            </button>
+            <button class="tool-button" data-tool="color_pick" type="button" hidden>
+              Lấy màu từ ảnh
             </button>
           </div>
 
@@ -262,8 +286,8 @@
           <strong>Mẹo để có kết quả tốt</strong>
           <p>
             Bắt đầu bằng một điểm xanh trên chủ thể. Nếu AI lấy nhầm vùng nền,
-            thêm điểm đỏ vào vùng đó. Có thể khoanh khung để giới hạn đối tượng
-            hoặc dùng polygon để giới hạn vùng cần giữ.
+            thêm điểm đỏ vào vùng đó. Với Chroma Key, hãy lấy màu từ vùng nền
+            có màu đại diện và điều chỉnh độ gần màu để kiểm soát vùng bị xóa.
           </p>
         </div>
       </section>
