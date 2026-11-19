@@ -1,3 +1,6 @@
+// ============================================================================
+// 1. THAM CHIẾU PHẦN TỬ DOM
+// ============================================================================
 const subjectInput = document.getElementById("subjectInput");
 const backgroundInput = document.getElementById("backgroundInput");
 const subjectDrop = document.getElementById("subjectDrop");
@@ -7,9 +10,11 @@ const removeBtn = document.getElementById("removeBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const resetBtn = document.getElementById("resetBtn");
 
+// Canvas xem trước kết quả sau khi thay nền
 const canvas = document.getElementById("previewCanvas");
 const ctx = canvas.getContext("2d");
 
+// Canvas chọn đối tượng tương tác (vẽ điểm, khung chữ nhật, polygon, cọ)
 const segmentCanvas = document.getElementById("segmentCanvas");
 const segmentCtx = segmentCanvas.getContext("2d");
 
@@ -31,18 +36,24 @@ const methodSelect = document.getElementById("methodSelect");
 const chromaOptions = document.getElementById("chromaOptions");
 const methodHelp = document.getElementById("methodHelp");
 
-let originalFile = null;
-let originalImage = null;
-let subjectImage = null;
-let backgroundImage = null;
-let backgroundColor = "#e9edf5";
+// ============================================================================
+// 2. TRẠNG THÁI ỨNG DỤNG (STATE)
+// ============================================================================
+let originalFile = null;       // Tệp ảnh gốc người dùng tải lên
+let originalImage = null;      // Đối tượng Image của ảnh gốc để vẽ lên segmentCanvas
+let subjectImage = null;       // Ảnh chủ thể RGBA đã tách nền để ghép lên previewCanvas
+let backgroundImage = null;    // Ảnh nền mới (nếu người dùng tải ảnh nền)
+let backgroundColor = "#e9edf5"; // Màu nền đơn sắc hiện tại
 
+// Tọa độ tâm chủ thể trên previewCanvas theo tỷ lệ chuẩn hóa [0..1]
 let subjectX = 0.5;
 let subjectY = 0.52;
 
+// Trạng thái kéo-thả di chuyển chủ thể trên previewCanvas
 let dragging = false;
 let lastPointer = null;
 
+// Trạng thái công cụ phân đoạn tương tác và dữ liệu prompt gửi lên server
 let currentTool = "point_fg";
 let prompts = {
     points: [],
@@ -50,18 +61,20 @@ let prompts = {
     polygon: null
 };
 
-let polygonDraft = [];
-let currentRect = null;
-let brushDrawing = false;
-let lastBrushPoint = null;
+let polygonDraft = [];         // Các đỉnh tạm thời khi đang vẽ polygon chưa khép kín
+let currentRect = null;        // Khung chữ nhật đang được kéo vẽ
+let brushDrawing = false;      // Cờ báo đang tô bằng công cụ cọ
+let lastBrushPoint = null;     // Điểm cọ cuối cùng để nội suy các điểm đều nhau
 
+// Kết quả phân đoạn và ngăn xếp lịch sử hoàn tác (Undo)
 let maskImage = null;
 let segmentationImageUrl = null;
 let segmentationResult = null;
 let segmentationHistory = [];
 let segmentationBusy = false;
-let segmentRequestId = 0;
+let segmentRequestId = 0;      // Bộ đếm request giúp bỏ qua kết quả trả về muộn (race condition)
 
+// Danh sách ID các thanh trượt điều khiển và giá trị mặc định tương ứng
 const controls = [
     "scale",
     "brightness",
@@ -82,11 +95,17 @@ const defaults = {
     keyTolerance: 75
 };
 
+// ============================================================================
+// 3. CÁC HÀM TIỆN ÍCH & HIỂN THỊ XEM TRƯỚC (LIVE PREVIEW)
+// ============================================================================
+
+/** Hiển thị thông báo trạng thái kèm kiểu (mặc định, 'ok', 'error'). */
 function setStatus(message, type = "") {
     statusBox.textContent = message;
     statusBox.className = "status " + type;
 }
 
+/** Tải ảnh bất đồng bộ từ URL hoặc Object URL và trả về Promise<HTMLImageElement>. */
 function loadImage(src) {
     return new Promise((resolve, reject) => {
         const img = new Image();
@@ -97,6 +116,7 @@ function loadImage(src) {
     });
 }
 
+/** Đồng bộ giá trị hiển thị (output) cạnh các thanh trượt điều khiển. */
 function updateOutputs() {
     for (const id of controls) {
         const element = document.getElementById(id);
@@ -121,6 +141,7 @@ function updateOutputs() {
     }
 }
 
+/** Cập nhật giao diện tùy chọn (Chroma Key, nhãn nút, mô tả) theo thuật toán đang chọn. */
 function updateMethodOptions() {
     const method = methodSelect.value;
 
@@ -145,6 +166,7 @@ function updateMethodOptions() {
     renderSegmentEditor();
 }
 
+/** Vẽ ảnh nền phủ kín canvas xem trước theo tỷ lệ cover, có hỗ trợ làm mờ (blur). */
 function drawCover(image, blur = 0) {
     const cw = canvas.width;
     const ch = canvas.height;
@@ -174,6 +196,7 @@ function drawCover(image, blur = 0) {
     ctx.restore();
 }
 
+/** Vẽ lại toàn bộ canvas xem trước: lớp nền (ảnh hoặc màu) + chủ thể đã tách nền kèm bộ lọc màu. */
 function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -228,6 +251,11 @@ function render() {
     downloadBtn.disabled = !subjectImage;
 }
 
+// ============================================================================
+// 4. QUẢN LÝ TRẠNG THÁI & VẼ TRÊN CANVAS PHÂN ĐOẠN TƯƠNG TÁC
+// ============================================================================
+
+/** Đặt lại toàn bộ điểm, vùng chọn, mask và lịch sử hoàn tác về trạng thái ban đầu. */
 function resetSegmentation() {
     prompts = {
         points: [],
@@ -249,6 +277,7 @@ function resetSegmentation() {
     renderSegmentEditor();
 }
 
+/** Lưu bản sao trạng thái prompts hiện tại vào ngăn xếp lịch sử (giới hạn tối đa 50 bước). */
 function saveSegmentationHistory() {
     segmentationHistory.push(
         JSON.parse(JSON.stringify(prompts))
@@ -259,6 +288,7 @@ function saveSegmentationHistory() {
     }
 }
 
+/** Cập nhật dòng tóm tắt số lượng điểm giữ/xóa, khung chữ nhật và polygon đang có. */
 function updatePromptSummary() {
     const positive = prompts.points.filter(
         point => point.label === 1
@@ -295,6 +325,7 @@ function updatePromptSummary() {
             : "Chưa có điểm hoặc vùng chọn.";
 }
 
+/** Tính khung hiển thị thực tế của ảnh gốc bên trong segmentCanvas (do object-fit: contain). */
 function getImageDisplayRect() {
     if (!originalImage) {
         return null;
@@ -319,6 +350,7 @@ function getImageDisplayRect() {
     };
 }
 
+/** Quy đổi tọa độ con trỏ chuột trên màn hình sang tọa độ pixel của ảnh gốc. */
 function pointerToImage(event) {
     const display = getImageDisplayRect();
 
@@ -344,6 +376,7 @@ function pointerToImage(event) {
     };
 }
 
+/** Vẽ lớp phủ mask màu xanh bán trong suốt lên segmentCanvas bằng kỹ thuật destination-in. */
 function drawMaskOverlay() {
     if (!maskImage || !originalImage) {
         return;
@@ -379,6 +412,7 @@ function drawMaskOverlay() {
     segmentCtx.restore();
 }
 
+/** Vẽ các điểm giữ (xanh lá) và điểm xóa (đỏ) kèm viền trắng lên segmentCanvas. */
 function drawPoints() {
     const radius = Math.max(
         7,
@@ -407,6 +441,7 @@ function drawPoints() {
     }
 }
 
+/** Vẽ khung chữ nhật nét đứt màu xanh dương biểu thị vùng chọn ROI. */
 function drawRect(rect) {
     if (!rect) {
         return;
@@ -439,6 +474,7 @@ function drawRect(rect) {
     segmentCtx.restore();
 }
 
+/** Vẽ đường đa giác (polygon) màu cam; nếu đã khép kín (closed=true) thì tô phủ nhẹ bên trong. */
 function drawPolygon(points, closed = false) {
     if (!points || points.length === 0) {
         return;
@@ -475,6 +511,7 @@ function drawPolygon(points, closed = false) {
     segmentCtx.restore();
 }
 
+/** Vẽ lại toàn bộ trình chỉnh sửa phân đoạn: ảnh gốc -> mask -> khung -> polygon -> các điểm. */
 function renderSegmentEditor() {
     if (!originalImage) {
         segmentEmpty.style.display = "flex";
@@ -522,6 +559,11 @@ function renderSegmentEditor() {
     updatePromptSummary();
 }
 
+// ============================================================================
+// 5. CÔNG CỤ CHỌN VÙNG & GỌI API PHÂN ĐOẠN (/api/segment)
+// ============================================================================
+
+/** Kích hoạt công cụ chọn vùng tương ứng và hiển thị hướng dẫn nhanh. */
 function setActiveTool(tool) {
     currentTool = tool;
 
@@ -544,6 +586,7 @@ function setActiveTool(tool) {
     setStatus(labels[tool] || "Chọn công cụ.");
 }
 
+/** Thêm một điểm giữ (label=1) hoặc điểm xóa (label=0) và chạy lại phân đoạn ngay. */
 function addPoint(point, label) {
     if (!point) {
         return;
@@ -560,6 +603,7 @@ function addPoint(point, label) {
     runSegmentation();
 }
 
+/** Lấy mẫu các điểm dọc theo nét kéo cọ (nội suy tuyến tính để tránh quá thưa hoặc quá dày). */
 function addBrushPoint(point, label) {
     if (!point) {
         return;
@@ -605,6 +649,7 @@ function addBrushPoint(point, label) {
     lastBrushPoint = point;
 }
 
+/** Khép kín đa giác nháp (cần ít nhất 3 đỉnh) và gửi yêu cầu phân đoạn. */
 function finishPolygon() {
     if (polygonDraft.length < 3) {
         setStatus("Polygon cần ít nhất 3 điểm.", "error");
@@ -620,6 +665,7 @@ function finishPolygon() {
     runSegmentation();
 }
 
+/** Hoàn tác bước gần nhất (xóa đỉnh polygon nháp trước, sau đó mới khôi phục từ lịch sử). */
 function undoSegmentation() {
     if (polygonDraft.length > 0) {
         polygonDraft.pop();
@@ -649,6 +695,7 @@ function undoSegmentation() {
     }
 }
 
+/** Gửi ảnh gốc, prompts và tham số thuật toán lên /api/segment rồi hiển thị mask trả về. */
 async function runSegmentation() {
     if (!originalFile) {
         setStatus("Vui lòng tải ảnh chủ thể trước.", "error");
@@ -754,6 +801,7 @@ async function runSegmentation() {
     }
 }
 
+/** Đưa ảnh chủ thể RGBA vừa phân đoạn sang khung xem trước ghép nền (Live Preview). */
 function applySegmentation() {
     if (!segmentationResult) {
         setStatus("Chưa có kết quả phân đoạn để áp dụng.", "error");
@@ -776,6 +824,11 @@ function applySegmentation() {
     render();
 }
 
+// ============================================================================
+// 6. TẢI TỆP ẢNH CHỦ THỂ / ẢNH NỀN & HỖ TRỢ KÉO-THẢ (DRAG & DROP)
+// ============================================================================
+
+/** Kiểm tra định dạng/dung lượng ảnh chủ thể, nạp vào segmentCanvas và đặt lại trạng thái. */
 async function setSubjectFile(file) {
     if (!file) {
         return;
@@ -828,6 +881,7 @@ async function setSubjectFile(file) {
     }
 }
 
+/** Nạp ảnh nền mới do người dùng chọn và bỏ chọn các ô màu nền đơn sắc. */
 async function setBackgroundFile(file) {
     if (!file) {
         return;
@@ -853,6 +907,7 @@ async function setBackgroundFile(file) {
     }
 }
 
+/** Gắn sự kiện kéo-thả tệp (dragover, dragleave, drop) cho một vùng upload. */
 function setupDrop(zone, handler) {
     zone.addEventListener("dragover", event => {
         event.preventDefault();
@@ -871,6 +926,11 @@ function setupDrop(zone, handler) {
     });
 }
 
+// ============================================================================
+// 7. ĐĂNG KÝ SỰ KIỆN GIAO DIỆN (EVENT LISTENERS)
+// ============================================================================
+
+// Chọn tệp qua input file và kích hoạt kéo-thả cho ảnh chủ thể & ảnh nền
 subjectInput.addEventListener("change", event => {
     setSubjectFile(event.target.files[0]);
 });
@@ -882,6 +942,7 @@ backgroundInput.addEventListener("change", event => {
 setupDrop(subjectDrop, setSubjectFile);
 setupDrop(backgroundDrop, setBackgroundFile);
 
+// Chọn màu nền đơn sắc nhanh từ các ô màu (swatch)
 document.querySelectorAll(".swatch").forEach(button => {
     button.addEventListener("click", () => {
         backgroundColor = button.dataset.color;
@@ -899,6 +960,7 @@ document.querySelectorAll(".swatch").forEach(button => {
     });
 });
 
+// Lắng nghe thay đổi trên các thanh trượt hậu kỳ và tham số tách nền
 controls.forEach(id => {
     const element = document.getElementById(id);
 
@@ -917,6 +979,7 @@ controls.forEach(id => {
     });
 });
 
+// Khi đổi thuật toán tách nền, xóa kết quả mask cũ để tránh nhầm lẫn
 methodSelect.addEventListener("change", () => {
     segmentationResult = null;
     maskImage = null;
@@ -944,6 +1007,7 @@ clearSegmentBtn.addEventListener("click", () => {
 
 applySegmentationBtn.addEventListener("click", applySegmentation);
 
+// Sự kiện con trỏ trên segmentCanvas: chấm điểm, kéo khung chữ nhật, vẽ polygon, tô cọ
 segmentCanvas.addEventListener("pointerdown", event => {
     if (!originalImage || segmentationBusy) {
         return;
@@ -1029,6 +1093,7 @@ segmentCanvas.addEventListener("pointermove", event => {
     }
 });
 
+/** Kết thúc thao tác kéo khung chữ nhật và chạy phân đoạn nếu khung đủ lớn (>= 5 px). */
 function finishRectangle() {
     if (!currentRect) {
         return;
@@ -1053,6 +1118,7 @@ function finishRectangle() {
     runSegmentation();
 }
 
+/** Kết thúc nét vẽ cọ, giới hạn tối đa 512 điểm và gửi phân đoạn. */
 function finishBrush() {
     if (!brushDrawing) {
         return;
@@ -1087,6 +1153,7 @@ segmentCanvas.addEventListener("pointercancel", () => {
     }
 });
 
+// Nút xử lý chính: gọi phân đoạn tương tác nếu có prompt/chọn SAM 2, ngược lại gọi /api/remove tự động
 removeBtn.addEventListener("click", async () => {
     if (!originalFile) {
         setStatus("Vui lòng tải ảnh chủ thể trước.", "error");
@@ -1161,6 +1228,7 @@ removeBtn.addEventListener("click", async () => {
     }
 });
 
+// Đặt lại toàn bộ thông số hậu kỳ và đưa chủ thể về vị trí giữa ảnh
 resetBtn.addEventListener("click", () => {
     for (const [id, value] of Object.entries(defaults)) {
         document.getElementById(id).value = value;
@@ -1173,6 +1241,7 @@ resetBtn.addEventListener("click", () => {
     render();
 });
 
+// Xuất nội dung previewCanvas hiện tại ra tệp ảnh PNG để người dùng tải về
 downloadBtn.addEventListener("click", () => {
     if (!subjectImage) {
         return;
@@ -1186,6 +1255,7 @@ downloadBtn.addEventListener("click", () => {
     link.click();
 });
 
+/** Quy đổi vị trí con trỏ trên previewCanvas sang tọa độ chuẩn hóa [0..1] để kéo di chuyển chủ thể. */
 function previewPointerPosition(event) {
     const rect = canvas.getBoundingClientRect();
 
@@ -1231,6 +1301,7 @@ canvas.addEventListener("pointercancel", () => {
     lastPointer = null;
 });
 
+// Khởi tạo giao diện ban đầu khi trang vừa tải xong
 updateOutputs();
 updateMethodOptions();
 render();

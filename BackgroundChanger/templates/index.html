@@ -4,23 +4,29 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Background Studio - Thay đổi nền ảnh</title>
+  <!-- Nạp tệp CSS giao diện chính từ thư mục static -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
+  <!-- Thanh tiêu đề trên cùng (Topbar) -->
   <header class="topbar">
     <a class="brand" href="/">◈ Background<span>Studio</span></a>
     <span class="top-note">AI Background Editor</span>
   </header>
 
   <main class="container">
+    <!-- Phần giới thiệu tiêu đề trang (Hero) -->
     <section class="hero">
       <div class="eyebrow">IMAGE EDITING WORKSPACE</div>
       <h1>Thay đổi nền ảnh <span>trong vài bước</span></h1>
       <p>Tự động tách chủ thể hoặc tự chọn chính xác vùng cần giữ lại bằng AI.</p>
     </section>
 
+    <!-- Không gian làm việc chính gồm 2 cột: bảng điều khiển bên trái và khu vực xem trước bên phải -->
     <section class="workspace">
+      <!-- Bảng điều khiển bên trái: tải ảnh, chọn nền, chọn thuật toán và tinh chỉnh màu sắc -->
       <aside class="panel controls">
+        <!-- Bước 1: Chọn hoặc kéo-thả ảnh chủ thể cần tách nền -->
         <div class="panel-heading">
           <div>
             <div class="step">BƯỚC 01</div>
@@ -40,6 +46,7 @@
 
         <div class="divider"></div>
 
+        <!-- Bước 2: Chọn ảnh nền mới hoặc bảng màu nền đơn sắc có sẵn -->
         <div class="panel-heading">
           <div>
             <div class="step">BƯỚC 02</div>
@@ -54,6 +61,7 @@
         </label>
         <input type="file" id="backgroundInput" accept="image/png,image/jpeg,image/webp" hidden>
 
+        <!-- Các ô màu nền (swatch) chọn nhanh -->
         <div class="swatches" aria-label="Màu nền có sẵn">
           <button class="swatch selected" data-color="#e9edf5" style="--swatch:#e9edf5" title="Xám sáng" type="button"></button>
           <button class="swatch" data-color="#dcefe8" style="--swatch:#dcefe8" title="Xanh nhạt" type="button"></button>
@@ -65,6 +73,7 @@
 
         <div class="divider"></div>
 
+        <!-- Bước 3: Chọn thuật toán tách nền và các tham số (Chroma Key, làm mềm viền) -->
         <div class="panel-heading">
           <div>
             <div class="step">BƯỚC 03</div>
@@ -90,6 +99,7 @@
           </small>
         </div>
 
+        <!-- Tùy chọn riêng cho chế độ Chroma Key (chỉ hiện khi chọn Chroma Key) -->
         <div class="chroma-options" id="chromaOptions" hidden>
           <div class="field-control">
             <label for="keyColor">Màu phông cần xóa</label>
@@ -105,6 +115,7 @@
           </div>
         </div>
 
+        <!-- Thanh trượt điều chỉnh độ làm mềm biên alpha (feather) -->
         <div class="slider-control">
           <div class="slider-label">
             <label for="feather">Làm mềm viền</label>
@@ -114,6 +125,7 @@
           <small>Giảm nếu muốn viền sắc nét hơn.</small>
         </div>
 
+        <!-- Nút kích hoạt tách nền / phân đoạn và dòng thông báo trạng thái -->
         <button class="btn btn-primary full" id="removeBtn" type="button">
           Phân đoạn đối tượng
         </button>
@@ -121,6 +133,7 @@
 
         <div class="divider"></div>
 
+        <!-- Nhóm thanh trượt hậu kỳ hiển thị trực tiếp trên canvas xem trước (client-side) -->
         <div class="slider-control">
           <div class="slider-label">
             <label for="scale">Kích thước chủ thể</label>
@@ -161,12 +174,15 @@
           <input id="bgBlur" type="range" min="0" max="12" value="0">
         </div>
 
+        <!-- Khôi phục toàn bộ thanh trượt và vị trí chủ thể về mặc định -->
         <button class="btn btn-ghost full" id="resetBtn" type="button">
           Đặt lại chỉnh sửa
         </button>
       </aside>
 
+      <!-- Khu vực bên phải: trình chỉnh sửa phân đoạn tương tác và khung xem trước kết quả -->
       <section class="panel preview-panel">
+        <!-- Phần 1: Trình chọn đối tượng tương tác (vẽ điểm, khung chữ nhật, polygon, cọ) -->
         <div class="preview-header">
           <div>
             <div class="step">INTERACTIVE SEGMENTATION</div>
@@ -184,6 +200,7 @@
             </p>
           </div>
 
+          <!-- Thanh công cụ chọn chế độ vẽ prompt trên canvas phân đoạn -->
           <div class="segment-toolbar">
             <button class="tool-button active" data-tool="point_fg" type="button">
               + Điểm đối tượng
@@ -205,6 +222,7 @@
             </button>
           </div>
 
+          <!-- Các nút thao tác với vùng chọn hiện tại (hoàn tất đa giác, hoàn tác, xóa hết) -->
           <div class="segment-actions">
             <button class="btn btn-small btn-ghost" id="finishPolygonBtn" type="button">
               Hoàn tất polygon
@@ -217,6 +235,7 @@
             </button>
           </div>
 
+          <!-- Canvas hiển thị ảnh gốc kèm lớp phủ mask và các điểm/vùng chọn -->
           <div class="segment-canvas-wrap">
             <canvas id="segmentCanvas"></canvas>
             <div class="segment-empty" id="segmentEmpty">
@@ -224,6 +243,7 @@
             </div>
           </div>
 
+          <!-- Tóm tắt số lượng prompt và nút chuyển kết quả phân đoạn sang khung ghép nền -->
           <div class="segment-footer">
             <span id="promptSummary">Chưa có điểm hoặc vùng chọn.</span>
             <button class="btn btn-primary" id="applySegmentationBtn" type="button" disabled>
@@ -234,6 +254,7 @@
 
         <div class="divider"></div>
 
+        <!-- Phần 2: Xem trước ảnh sau khi ghép chủ thể lên nền mới -->
         <div class="preview-header">
           <div>
             <div class="step">LIVE PREVIEW</div>
@@ -242,6 +263,7 @@
           <span class="pill success" id="previewState">Chưa tách nền</span>
         </div>
 
+        <!-- Canvas xem trước cho phép kéo thả để di chuyển vị trí chủ thể -->
         <div class="canvas-wrap" id="canvasWrap">
           <canvas id="previewCanvas" width="1200" height="800"></canvas>
           <div class="empty-state" id="emptyState">
@@ -251,6 +273,7 @@
           </div>
         </div>
 
+        <!-- Thanh công cụ xuất ảnh kết quả PNG -->
         <div class="preview-tools">
           <span>Di chuyển chủ thể bằng cách kéo trực tiếp trên ảnh xem trước.</span>
           <button class="btn btn-primary" id="downloadBtn" type="button" disabled>
@@ -258,6 +281,7 @@
           </button>
         </div>
 
+        <!-- Hộp gợi ý sử dụng để đạt chất lượng tách nền tốt hơn -->
         <div class="tips">
           <strong>Mẹo để có kết quả tốt</strong>
           <p>
@@ -269,11 +293,13 @@
       </section>
     </section>
 
+    <!-- Chân trang liệt kê công nghệ sử dụng -->
     <footer>
       Background Studio · Python · Flask · SAM 2 · PyTorch · OpenCV · rembg
     </footer>
   </main>
 
+  <!-- Nạp mã JavaScript điều khiển tương tác phía trình duyệt -->
   <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

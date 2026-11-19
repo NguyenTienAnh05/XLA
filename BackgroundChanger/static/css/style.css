@@ -1,5 +1,7 @@
+/* Nạp font Be Vietnam Pro hỗ trợ hiển thị tiếng Việt sắc nét */
 @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
 
+/* Biến màu toàn cục cho bảng màu giao diện */
 :root {
     --ink: #19253a;
     --muted: #718096;
@@ -9,6 +11,7 @@
     --bg: #f4f6fa;
 }
 
+/* Thiết lập nền tảng và reset cơ bản */
 * {
     box-sizing: border-box;
 }
@@ -26,6 +29,7 @@ select {
     font-family: inherit;
 }
 
+/* Thanh tiêu đề trên cùng (Topbar) */
 .topbar {
     height: 68px;
     background: #fff;
@@ -55,6 +59,7 @@ select {
     letter-spacing: 1px;
 }
 
+/* Khung nội dung chính và phần tiêu đề Hero */
 .container {
     max-width: 1500px;
     margin: auto;
@@ -90,6 +95,7 @@ select {
     font-size: 14px;
 }
 
+/* Bố cục 2 cột của không gian làm việc: sidebar điều khiển (350px) + khu vực xem trước */
 .workspace {
     display: grid;
     grid-template-columns: 350px minmax(0, 1fr);
@@ -137,6 +143,7 @@ select {
     color: #238552;
 }
 
+/* Vùng kéo-thả / chọn tệp ảnh */
 .upload-zone {
     border: 1.5px dashed #cbd4e4;
     border-radius: 12px;
@@ -207,6 +214,7 @@ select {
     margin: 20px 0;
 }
 
+/* Bảng màu nền nhanh (swatches) và các thanh trượt / ô nhập liệu */
 .swatches {
     display: flex;
     gap: 9px;
@@ -295,6 +303,7 @@ input[type=range] {
     display: none !important;
 }
 
+/* Hệ thống nút bấm và dòng trạng thái */
 .btn {
     border: 0;
     border-radius: 10px;
@@ -366,7 +375,7 @@ input[type=range] {
     margin-bottom: 18px;
 }
 
-/* Interactive segmentation */
+/* Khu vực phân đoạn đối tượng tương tác (Interactive Segmentation) */
 
 .segment-editor {
     border: 1px solid var(--line);
@@ -484,7 +493,7 @@ input[type=range] {
     flex-shrink: 0;
 }
 
-/* Main preview */
+/* Khu vực xem trước kết quả ghép nền (Live Preview) với nền ca-rô biểu thị vùng trong suốt */
 
 .canvas-wrap {
     width: 100%;
@@ -581,6 +590,7 @@ footer {
     padding: 26px 0 5px;
 }
 
+/* Giao diện đáp ứng (Responsive) cho màn hình tablet và điện thoại */
 @media (max-width: 1000px) {
     .workspace {
         grid-template-columns: 1fr;
