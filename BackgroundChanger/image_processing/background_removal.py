@@ -1,5 +1,9 @@
 
-"""Background removal algorithms and edge-aware alpha refinement."""
+"""Classical and AI background-removal algorithms.
+
+The classical methods share mask refinement utilities but keep their own
+segmentation strategy. PyTorch operations use CUDA when available.
+"""
 
 from __future__ import annotations
 
@@ -8,140 +12,377 @@ import numpy as np
 from PIL import Image
 
 from ..config import MAX_IMAGE_SIZE
+from . import gpu_backend
+
 
 _rembg_session = None
 
 
+def get_device() -> str:
+    return str(gpu_backend.get_device())
+
+
+def get_device_info() -> dict:
+    return gpu_backend.get_device_info()
+
+
 def _get_rembg_session():
     global _rembg_session
+
     if _rembg_session is None:
         from rembg import new_session
-        _rembg_session = new_session("u2net")
+
+        providers = ["CPUExecutionProvider"]
+
+        try:
+            import onnxruntime as ort
+            available = ort.get_available_providers()
+
+            if "CUDAExecutionProvider" in available:
+                providers = [
+                    "CUDAExecutionProvider",
+                    "CPUExecutionProvider"
+                ]
+        except Exception:
+            pass
+
+        try:
+            _rembg_session = new_session(
+                "u2net",
+                providers=providers
+            )
+        except Exception:
+            _rembg_session = new_session(
+                "u2net",
+                providers=["CPUExecutionProvider"]
+            )
+
     return _rembg_session
 
 
 def _prepare_rgb(image: Image.Image) -> np.ndarray:
+    if not isinstance(image, Image.Image):
+        raise TypeError("Đầu vào phải là ảnh PIL.")
+
     source = image.convert("RGB")
     source.thumbnail(MAX_IMAGE_SIZE, Image.Resampling.LANCZOS)
-    return np.asarray(source).copy()
+
+    return np.asarray(source, dtype=np.uint8).copy()
 
 
-def _border_mask(shape: tuple[int, int], fraction: float = 0.025) -> np.ndarray:
+def _border_mask(
+    shape: tuple[int, int],
+    fraction: float = 0.02
+) -> np.ndarray:
     h, w = shape
     band = max(1, int(round(min(h, w) * fraction)))
-    result = np.zeros((h, w), np.uint8)
-    result[:band] = 1
-    result[-band:] = 1
-    result[:, :band] = 1
-    result[:, -band:] = 1
-    return result.astype(bool)
+
+    border = np.zeros((h, w), dtype=bool)
+    border[:band, :] = True
+    border[-band:, :] = True
+    border[:, :band] = True
+    border[:, -band:] = True
+
+    return border
 
 
-def _edge_aware_alpha(binary: np.ndarray, feather: float = 1.2) -> np.ndarray:
-    """Create a soft transition only near the mask boundary, not across the subject."""
-    mask = (binary > 0).astype(np.uint8)
+def _odd_kernel(value: int, maximum: int = 15) -> int:
+    value = max(3, int(value))
+
+    if value % 2 == 0:
+        value += 1
+
+    maximum = max(3, int(maximum))
+
+    if maximum % 2 == 0:
+        maximum -= 1
+
+    return min(value, maximum)
+
+
+def _clean_binary(
+    mask: np.ndarray,
+    remove_small: bool = True
+) -> np.ndarray:
+    mask = (np.asarray(mask) > 0).astype(np.uint8)
+    h, w = mask.shape
+
+    if min(h, w) < 3:
+        return mask
+
+    scale = max(1, int(round(min(h, w) * 0.002)))
+
+    open_size = _odd_kernel(
+        2 * scale + 1,
+        min(7, min(h, w))
+    )
+
+    close_size = _odd_kernel(
+        4 * scale + 1,
+        min(11, min(h, w))
+    )
+
+    open_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (open_size, open_size)
+    )
+
+    close_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (close_size, close_size)
+    )
+
+    cleaned = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        open_kernel
+    )
+
+    cleaned = cv2.morphologyEx(
+        cleaned,
+        cv2.MORPH_CLOSE,
+        close_kernel
+    )
+
+    if not remove_small or not np.any(cleaned):
+        return cleaned
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        cleaned,
+        connectivity=8
+    )
+
+    min_area = max(8, int(h * w * 0.00005))
+    result = np.zeros_like(cleaned)
+
+    for component_id in range(1, count):
+        area = stats[component_id, cv2.CC_STAT_AREA]
+
+        if area >= min_area:
+            result[labels == component_id] = 1
+
+    return result
+
+
+def _edge_aware_alpha(
+    binary: np.ndarray,
+    feather: float = 1.2
+) -> np.ndarray:
+    mask = (np.asarray(binary) > 0).astype(np.uint8)
+
     if not np.any(mask):
-        return mask * 0
+        return np.zeros(mask.shape, dtype=np.uint8)
+
     if np.all(mask):
+        return np.full(mask.shape, 255, dtype=np.uint8)
+
+    inside = cv2.distanceTransform(
+        mask,
+        cv2.DIST_L2,
+        5
+    )
+
+    outside = cv2.distanceTransform(
+        1 - mask,
+        cv2.DIST_L2,
+        5
+    )
+
+    signed = inside - outside
+    softness = max(0.0, min(8.0, float(feather)))
+
+    if softness <= 0:
         return mask * 255
 
-    inside = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    outside = cv2.distanceTransform(1 - mask, cv2.DIST_L2, 5)
-    signed = inside - outside
-    softness = max(0.65, min(4.0, float(feather)))
-    alpha = np.clip(0.5 + signed / (2.0 * softness), 0.0, 1.0)
+    alpha = np.clip(
+        0.5 + signed / (2.0 * max(softness, 0.5)),
+        0.0,
+        1.0
+    )
+
     return np.round(alpha * 255).astype(np.uint8)
 
 
-def _rgba_from_mask(rgb: np.ndarray, mask: np.ndarray, feather: float = 1.2) -> Image.Image:
+def _rgba_from_mask(
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    feather: float = 1.2
+) -> Image.Image:
+    if mask.shape != rgb.shape[:2]:
+        raise ValueError("Mask không khớp kích thước ảnh.")
+
     alpha = _edge_aware_alpha(mask, feather)
     rgba = np.dstack((rgb.astype(np.uint8), alpha))
+
     return Image.fromarray(rgba, "RGBA")
 
 
-def smooth_alpha(image: Image.Image, feather: float = 1.2) -> Image.Image:
-    """Refine existing alpha without blurring the entire silhouette."""
+def smooth_alpha(
+    image: Image.Image,
+    feather: float = 1.2
+) -> Image.Image:
+    """Preserve model alpha while refining hard edge transitions."""
     rgba = image.convert("RGBA")
     pixels = np.asarray(rgba).copy()
     alpha = pixels[:, :, 3]
-    if feather > 0 and np.any(alpha) and np.any(alpha < 255):
-        binary = (alpha >= 128).astype(np.uint8)
-        refined = _edge_aware_alpha(binary, feather)
-        soft = (alpha > 0) & (alpha < 255)
-        refined[soft] = alpha[soft]
-        pixels[:, :, 3] = refined
+
+    if feather <= 0 or not np.any(alpha) or np.all(alpha == 255):
+        return rgba
+
+    binary = (alpha >= 128).astype(np.uint8)
+    refined = _edge_aware_alpha(binary, feather)
+
+    transition = (alpha > 0) & (alpha < 255)
+    refined[transition] = alpha[transition]
+
+    pixels[:, :, 3] = refined
+
     return Image.fromarray(pixels, "RGBA")
+
+
+def _candidate_score(
+    mask: np.ndarray,
+    rgb: np.ndarray
+) -> float:
+    """Score a binary foreground candidate without assuming fixed object size."""
+    mask = (mask > 0).astype(np.uint8)
+    h, w = mask.shape
+
+    area = float(mask.mean())
+    border_ratio = float(mask[_border_mask((h, w))].mean())
+
+    if area <= 0.002:
+        return 10.0 + (0.002 - area) * 100.0
+
+    if area >= 0.985:
+        return 10.0 + (area - 0.985) * 100.0
+
+    score = border_ratio * 5.0
+
+    gray = cv2.cvtColor(
+        rgb,
+        cv2.COLOR_RGB2GRAY
+    )
+
+    boundary = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_GRADIENT,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (3, 3)
+        )
+    ) > 0
+
+    if np.any(boundary):
+        dilated = cv2.dilate(
+            boundary.astype(np.uint8),
+            np.ones((3, 3), np.uint8)
+        ) > 0
+
+        eroded = cv2.erode(
+            mask,
+            np.ones((3, 3), np.uint8)
+        ) > 0
+
+        outside = dilated & ~eroded
+        inside = dilated & eroded
+
+        if np.any(outside) and np.any(inside):
+            contrast = abs(
+                float(gray[inside].mean())
+                - float(gray[outside].mean())
+            )
+
+            score -= min(contrast / 255.0, 1.0) * 0.35
+
+    score += max(0.0, 0.04 - area) * 2.0
+    score += max(0.0, area - 0.90) * 2.0
+
+    return score
+
+
+def _select_polarity(
+    candidates: list[np.ndarray],
+    rgb: np.ndarray
+) -> np.ndarray:
+    if not candidates:
+        raise ValueError("Không có mask ứng viên để lựa chọn.")
+
+    prepared = [
+        _clean_binary(candidate)
+        for candidate in candidates
+    ]
+
+    valid = [
+        mask for mask in prepared
+        if np.any(mask) and not np.all(mask)
+    ]
+
+    if not valid:
+        return np.ones(rgb.shape[:2], dtype=np.uint8)
+
+    return min(
+        valid,
+        key=lambda item: _candidate_score(item, rgb)
+    )
 
 
 def remove_chroma_background(
     image: Image.Image,
     key_color: str = "#00ff00",
     tolerance: float = 75,
-    feather: float = 1.2,
+    feather: float = 1.2
 ) -> Image.Image:
     rgb = _prepare_rgb(image)
-    if len(key_color) != 7 or not key_color.startswith("#"):
-        raise ValueError("Mã màu Chroma Key không hợp lệ.")
+
+    alpha = gpu_backend.chroma_alpha(
+        rgb,
+        key_color,
+        tolerance
+    )
 
     key_rgb = np.array(
-        [int(key_color[i:i + 2], 16) for i in (1, 3, 5)],
-        np.uint8
+        [
+            int(key_color[i:i + 2], 16)
+            for i in (1, 3, 5)
+        ],
+        dtype=np.uint8
     )
 
-    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-    key_lab = cv2.cvtColor(
-        key_rgb.reshape(1, 1, 3),
-        cv2.COLOR_RGB2LAB
-    ).astype(np.float32)[0, 0]
-
-    distance = np.linalg.norm(lab - key_lab, axis=2)
-
-    low = max(5.0, float(tolerance) * 0.55)
-    high = max(low + 8.0, float(tolerance) * 1.25)
-
-    alpha = np.clip(
-        (distance - low) / (high - low),
-        0.0,
-        1.0
-    )
-
-    # Despill green/blue contamination in partially transparent edge pixels.
-    key_dominant = (
-        key_rgb.astype(int).max() -
-        key_rgb.astype(int).min()
-    ) > 35
-
-    if key_dominant:
+    # Reduce color spill only on partially transparent edge pixels.
+    if int(key_rgb.max()) - int(key_rgb.min()) > 25:
         dominant = int(np.argmax(key_rgb))
-        other = [i for i in range(3) if i != dominant]
-        edge = (alpha > 0.02) & (alpha < 0.98)
+        other = [index for index in range(3) if index != dominant]
+
+        edge = (alpha > 8) & (alpha < 248)
 
         if np.any(edge):
             values = rgb.astype(np.float32)
 
+            reference = np.maximum(
+                values[:, :, other[0]],
+                values[:, :, other[1]]
+            )
+
             spill = np.maximum(
                 0.0,
-                values[:, :, dominant] -
-                np.maximum(
-                    values[:, :, other[0]],
-                    values[:, :, other[1]]
-                )
+                values[:, :, dominant] - reference
             )
 
             values[:, :, dominant] = np.where(
                 edge,
-                values[:, :, dominant] - spill * 0.35,
+                values[:, :, dominant] - spill * 0.55,
                 values[:, :, dominant]
             )
 
             rgb = np.clip(values, 0, 255).astype(np.uint8)
 
-    alpha_u8 = np.round(alpha * 255).astype(np.uint8)
-
-    return smooth_alpha(
-        Image.fromarray(np.dstack((rgb, alpha_u8)), "RGBA"),
-        feather
+    rgba = Image.fromarray(
+        np.dstack((rgb, alpha)),
+        "RGBA"
     )
+
+    return smooth_alpha(rgba, feather)
 
 
 def remove_image_background_grabcut(
@@ -149,7 +390,7 @@ def remove_image_background_grabcut(
     feather: float = 1.2,
     fg_points: list[tuple[float, float]] | None = None,
     bg_points: list[tuple[float, float]] | None = None,
-    rect: tuple[float, float, float, float] | None = None,
+    rect: tuple[float, float, float, float] | None = None
 ) -> Image.Image:
     rgb = _prepare_rgb(image)
     h, w = rgb.shape[:2]
@@ -157,77 +398,96 @@ def remove_image_background_grabcut(
     if h < 3 or w < 3:
         raise ValueError("Ảnh quá nhỏ để chạy GrabCut.")
 
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    fg_points, bg_points = fg_points or [], bg_points or []
+    fg_points = fg_points or []
+    bg_points = bg_points or []
 
-    if rect:
+    bgr = cv2.cvtColor(
+        rgb,
+        cv2.COLOR_RGB2BGR
+    )
+
+    if rect is not None:
         rx, ry, rw, rh = rect
 
         x1 = int(np.clip(round(rx * w), 0, w - 2))
         y1 = int(np.clip(round(ry * h), 0, h - 2))
         x2 = int(np.clip(round((rx + rw) * w), x1 + 2, w))
         y2 = int(np.clip(round((ry + rh) * h), y1 + 2, h))
+
+        grab_rect = (x1, y1, x2 - x1, y2 - y1)
+
     else:
-        margin_x = max(1, int(w * 0.03))
-        margin_y = max(1, int(h * 0.03))
-        x1, y1 = margin_x, margin_y
-        x2, y2 = w - margin_x, h - margin_y
+        margin_x = max(1, int(round(w * 0.03)))
+        margin_y = max(1, int(round(h * 0.03)))
 
-    mask = np.full((h, w), cv2.GC_BGD, np.uint8)
-    mask[y1:y2, x1:x2] = cv2.GC_PR_FGD
+        grab_rect = (
+            margin_x,
+            margin_y,
+            max(2, w - 2 * margin_x),
+            max(2, h - 2 * margin_y)
+        )
 
-    if not rect:
-        mask[1:-1, 1:-1] = cv2.GC_PR_FGD
-
-    radius = max(
-        3,
-        min(24, int(round(min(h, w) * 0.008)))
+    mask = np.full(
+        (h, w),
+        cv2.GC_BGD,
+        dtype=np.uint8
     )
 
-    for px, py in fg_points:
-        cv2.circle(
-            mask,
-            (
-                int(np.clip(px * w, 0, w - 1)),
-                int(np.clip(py * h, 0, h - 1))
-            ),
-            radius,
-            cv2.GC_FGD,
-            -1
+    x, y, rw, rh = grab_rect
+    mask[y:y + rh, x:x + rw] = cv2.GC_PR_FGD
+
+    if fg_points or bg_points:
+        radius = max(
+            3,
+            min(30, int(round(min(h, w) * 0.009)))
         )
 
-    for px, py in bg_points:
-        cv2.circle(
-            mask,
-            (
-                int(np.clip(px * w, 0, w - 1)),
-                int(np.clip(py * h, 0, h - 1))
-            ),
-            radius,
-            cv2.GC_BGD,
-            -1
-        )
+        for px, py in fg_points:
+            cv2.circle(
+                mask,
+                (
+                    int(np.clip(round(px * w), 0, w - 1)),
+                    int(np.clip(round(py * h), 0, h - 1))
+                ),
+                radius,
+                cv2.GC_FGD,
+                -1
+            )
+
+        for px, py in bg_points:
+            cv2.circle(
+                mask,
+                (
+                    int(np.clip(round(px * w), 0, w - 1)),
+                    int(np.clip(round(py * h), 0, h - 1))
+                ),
+                radius,
+                cv2.GC_BGD,
+                -1
+            )
+
+        mode = cv2.GC_INIT_WITH_MASK
+
+    else:
+        mode = cv2.GC_INIT_WITH_RECT
 
     bgd_model = np.zeros((1, 65), np.float64)
     fgd_model = np.zeros((1, 65), np.float64)
-
-    if not np.any(np.isin(mask, (cv2.GC_BGD, cv2.GC_PR_BGD))):
-        mask[0, :] = mask[-1, :] = cv2.GC_BGD
-        mask[:, 0] = mask[:, -1] = cv2.GC_BGD
 
     try:
         cv2.grabCut(
             bgr,
             mask,
-            None,
+            grab_rect if mode == cv2.GC_INIT_WITH_RECT else None,
             bgd_model,
             fgd_model,
-            7,
-            cv2.GC_INIT_WITH_MASK
+            8,
+            mode
         )
+
     except cv2.error as exc:
         raise RuntimeError(
-            "GrabCut không hội tụ. Hãy thêm điểm giữ và điểm nền ở các vùng rõ ràng."
+            "GrabCut không hội tụ. Hãy chọn lại vùng hoặc thêm điểm tiền cảnh/hậu cảnh."
         ) from exc
 
     binary = np.isin(
@@ -235,96 +495,10 @@ def remove_image_background_grabcut(
         (cv2.GC_FGD, cv2.GC_PR_FGD)
     ).astype(np.uint8)
 
+    if not np.any(binary):
+        raise RuntimeError("GrabCut không tìm thấy vùng tiền cảnh.")
+
     return _rgba_from_mask(rgb, binary, feather)
-
-
-def _border_pixels(gray: np.ndarray) -> np.ndarray:
-    border = _border_mask(gray.shape)
-    return gray[border]
-
-
-def _polarity_candidates(
-    gray: np.ndarray,
-    adaptive: bool = False
-) -> list[np.ndarray]:
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    candidates = []
-
-    if adaptive:
-        block = max(11, (min(gray.shape) // 12) | 1)
-        block = min(block, 101)
-
-        if block % 2 == 0:
-            block -= 1
-
-        for polarity in (
-            cv2.THRESH_BINARY,
-            cv2.THRESH_BINARY_INV
-        ):
-            candidates.append(
-                cv2.adaptiveThreshold(
-                    blurred,
-                    255,
-                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    polarity,
-                    block,
-                    2.0
-                )
-            )
-    else:
-        _, binary = cv2.threshold(
-            blurred,
-            0,
-            255,
-            cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-
-        candidates = [
-            binary,
-            cv2.bitwise_not(binary)
-        ]
-
-    return candidates
-
-
-def _clean_binary(mask: np.ndarray) -> np.ndarray:
-    mask = (mask > 0).astype(np.uint8)
-
-    small = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (3, 3)
-    )
-
-    medium = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (5, 5)
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        small
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        medium
-    )
-
-    return mask
-
-
-def _select_polarity(mask: np.ndarray, gray: np.ndarray) -> np.ndarray:
-    border = _border_mask(mask.shape)
-    border_foreground = float(mask[border].mean())
-
-    score = (
-        border_foreground * 2.0 +
-        abs(float(mask.mean()) - 0.35) * 0.15
-    )
-
-    return mask if score < 0.5 else 1 - mask
 
 
 def remove_by_otsu(
@@ -332,17 +506,9 @@ def remove_by_otsu(
     feather: float = 1.2
 ) -> Image.Image:
     rgb = _prepare_rgb(image)
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-    candidates = [
-        _clean_binary(item)
-        for item in _polarity_candidates(gray)
-    ]
-
-    mask = _select_polarity(candidates[0], gray)
-
-    if candidates[1].mean() < candidates[0].mean():
-        mask = candidates[1]
+    candidates = gpu_backend.otsu_candidates(rgb)
+    mask = _select_polarity(candidates, rgb)
 
     return _rgba_from_mask(rgb, mask, feather)
 
@@ -352,38 +518,23 @@ def remove_by_adaptive(
     feather: float = 1.2
 ) -> Image.Image:
     rgb = _prepare_rgb(image)
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-    candidates = [
-        _clean_binary(item)
-        for item in _polarity_candidates(gray, adaptive=True)
-    ]
+    candidates = gpu_backend.adaptive_candidates(
+        rgb,
+        block_size=None,
+        constant=2.0
+    )
 
-    border = _border_mask(gray.shape)
+    mask = _select_polarity(candidates, rgb)
 
-    scores = [
-        float(candidate[border].mean()) +
-        abs(float(candidate.mean()) - 0.35) * 0.1
-        for candidate in candidates
-    ]
+    if float(mask.mean()) < 0.003:
+        otsu_mask = _select_polarity(
+            gpu_backend.otsu_candidates(rgb),
+            rgb
+        )
 
-    mask = candidates[int(np.argmin(scores))]
-
-    # Adaptive threshold can collapse into tiny local fragments on flat studio
-    # backgrounds. Fall back to the global histogram split when confidence is low.
-    if float(mask.mean()) < 0.045:
-        otsu_candidates = [
-            _clean_binary(item)
-            for item in _polarity_candidates(gray)
-        ]
-
-        otsu_scores = [
-            float(item[border].mean()) +
-            abs(float(item.mean()) - 0.35) * 0.1
-            for item in otsu_candidates
-        ]
-
-        mask = otsu_candidates[int(np.argmin(otsu_scores))]
+        if np.any(otsu_mask):
+            mask = otsu_mask
 
     return _rgba_from_mask(rgb, mask, feather)
 
@@ -395,25 +546,16 @@ def remove_by_watershed(
     rgb = _prepare_rgb(image)
     h, w = rgb.shape[:2]
 
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-
-    base = _select_polarity(
-        _clean_binary(_polarity_candidates(gray)[0]),
-        gray
+    initial = _select_polarity(
+        gpu_backend.otsu_candidates(rgb),
+        rgb
     )
 
-    sure_bg = cv2.dilate(
-        base,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (9, 9)
-        ),
-        iterations=2
-    )
+    if not np.any(initial) or np.all(initial):
+        return _rgba_from_mask(rgb, initial, feather)
 
     distance = cv2.distanceTransform(
-        base,
+        initial.astype(np.uint8),
         cv2.DIST_L2,
         5
     )
@@ -421,29 +563,67 @@ def remove_by_watershed(
     if distance.max() <= 0:
         return _rgba_from_mask(
             rgb,
-            np.zeros((h, w), np.uint8),
+            np.zeros((h, w), dtype=np.uint8),
             feather
         )
 
-    _, sure_fg = cv2.threshold(
-        distance,
-        0.35 * distance.max(),
-        255,
-        0
+    sure_fg = (
+        distance >= max(1.0, 0.32 * float(distance.max()))
+    ).astype(np.uint8)
+
+    foreground_dilated = cv2.dilate(
+        initial,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (9, 9)
+        ),
+        iterations=2
     )
 
-    sure_fg = sure_fg.astype(np.uint8)
-    unknown = cv2.subtract(sure_bg, sure_fg)
+    unknown = (foreground_dilated > 0).astype(np.uint8)
+    sure_bg = (1 - unknown).astype(np.uint8)
 
-    _, markers = cv2.connectedComponents(sure_fg)
-    markers = markers + 1
-    markers[unknown > 0] = 0
+    if not np.any(sure_bg):
+        sure_bg[_border_mask((h, w))] = 1
 
-    cv2.watershed(bgr, markers)
+    markers = np.zeros((h, w), dtype=np.int32)
+    markers[sure_bg > 0] = 1
 
-    mask = (markers > 1).astype(np.uint8)
+    component_count, components = cv2.connectedComponents(sure_fg)
 
-    return _rgba_from_mask(rgb, mask, feather)
+    for component_id in range(1, component_count):
+        markers[components == component_id] = component_id + 1
+
+    try:
+        cv2.watershed(
+            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+            markers
+        )
+
+    except cv2.error as exc:
+        raise RuntimeError(
+            "Watershed không thể tạo đường phân chia."
+        ) from exc
+
+    result = (markers > 1).astype(np.uint8)
+
+    allowed = cv2.dilate(
+        initial,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (13, 13)
+        ),
+        iterations=1
+    )
+
+    result &= allowed
+
+    if not np.any(result):
+        result = initial
+
+    result = _clean_binary(result)
+
+    return _rgba_from_mask(rgb, result, feather)
 
 
 def remove_by_kmeans(
@@ -454,93 +634,92 @@ def remove_by_kmeans(
     rgb = _prepare_rgb(image)
     h, w = rgb.shape[:2]
 
-    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
-
-    # Add weak spatial features to reduce disconnected same-color regions.
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    spatial_scale = 18.0
-
-    features = np.dstack((
-        lab.astype(np.float32),
-        xx / max(1, w) * spatial_scale,
-        yy / max(1, h) * spatial_scale
-    ))
-
-    pixels = features.reshape(-1, 5)
-
-    sample = (
-        pixels
-        if len(pixels) <= 180000
-        else pixels[
-            np.linspace(
-                0,
-                len(pixels) - 1,
-                180000
-            ).astype(int)
-        ]
+    label_map, centers = gpu_backend.kmeans_labels(
+        rgb,
+        k=max(2, min(int(k), 8)),
+        max_sample=100000,
+        chunk_size=100000,
+        spatial_scale=0.16
     )
 
-    k = max(2, min(int(k), 8, len(sample)))
-
-    criteria = (
-        cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
-        60,
-        0.3
-    )
-
-    _, labels, centers = cv2.kmeans(
-        sample.astype(np.float32),
-        k,
-        None,
-        criteria,
-        4,
-        cv2.KMEANS_PP_CENTERS
-    )
-
-    # Assign every pixel to its nearest learned center in bounded chunks.
-    centers = centers.astype(np.float32)
-    label_map = np.empty(len(pixels), np.uint8)
-
-    for start in range(0, len(pixels), 100000):
-        chunk = pixels[start:start + 100000]
-
-        distances = (
-            (chunk[:, None, :] - centers[None, :, :]) ** 2
-        ).sum(axis=2)
-
-        label_map[start:start + len(chunk)] = distances.argmin(axis=1)
-
-    label_map = label_map.reshape(h, w)
+    if label_map.shape != (h, w):
+        raise RuntimeError(
+            "Bản đồ nhãn K-Means không khớp kích thước ảnh."
+        )
 
     border = _border_mask((h, w))
+    background_mask = np.zeros((h, w), dtype=np.uint8)
 
-    border_coverage = np.array([
-        float((label_map[border] == idx).mean())
-        for idx in range(k)
-    ])
+    border_counts = np.bincount(
+        label_map[border].astype(np.int32),
+        minlength=len(centers)
+    )
 
-    # A spatially varying background can occupy several clusters.
-    # Treat all clusters materially represented on the frame as background.
-    background_labels = np.flatnonzero(
-        border_coverage >= max(
-            0.025,
-            border_coverage.max() * 0.18
+    total_border = max(1, int(border.sum()))
+    border_fraction = border_counts / total_border
+
+    candidate_labels = np.flatnonzero(
+        border_fraction >= max(
+            0.015,
+            float(border_fraction.max()) * 0.12
         )
     )
 
-    if len(background_labels) == 0:
-        background_labels = np.array([
-            int(np.argmax(border_coverage))
-        ])
+    for label in candidate_labels:
+        cluster = (label_map == label).astype(np.uint8)
 
-    mask = (~np.isin(
-        label_map,
-        background_labels
-    )).astype(np.uint8)
+        count, components, stats, _ = cv2.connectedComponentsWithStats(
+            cluster,
+            connectivity=8
+        )
 
-    mask = _clean_binary(mask)
+        for component_id in range(1, count):
+            x = stats[component_id, cv2.CC_STAT_LEFT]
+            y = stats[component_id, cv2.CC_STAT_TOP]
+            cw = stats[component_id, cv2.CC_STAT_WIDTH]
+            ch = stats[component_id, cv2.CC_STAT_HEIGHT]
+            area = stats[component_id, cv2.CC_STAT_AREA]
 
-    return _rgba_from_mask(rgb, mask, feather)
+            touches_border = (
+                x == 0
+                or y == 0
+                or x + cw >= w
+                or y + ch >= h
+            )
+
+            if not touches_border:
+                continue
+
+            if area < max(12, int(h * w * 0.00005)):
+                continue
+
+            background_mask[components == component_id] = 1
+
+    if not np.any(background_mask):
+        dominant_label = int(np.argmax(border_fraction))
+        cluster = (label_map == dominant_label).astype(np.uint8)
+
+        count, components, stats, _ = cv2.connectedComponentsWithStats(
+            cluster,
+            connectivity=8
+        )
+
+        for component_id in range(1, count):
+            x = stats[component_id, cv2.CC_STAT_LEFT]
+            y = stats[component_id, cv2.CC_STAT_TOP]
+            cw = stats[component_id, cv2.CC_STAT_WIDTH]
+            ch = stats[component_id, cv2.CC_STAT_HEIGHT]
+
+            if x == 0 or y == 0 or x + cw >= w or y + ch >= h:
+                background_mask[components == component_id] = 1
+
+    foreground = (1 - background_mask).astype(np.uint8)
+    foreground = _clean_binary(foreground)
+
+    if float(foreground.mean()) < 0.01 or float(foreground.mean()) > 0.995:
+        foreground = np.ones((h, w), dtype=np.uint8)
+
+    return _rgba_from_mask(rgb, foreground, feather)
 
 
 def remove_by_contour(
@@ -549,11 +728,28 @@ def remove_by_contour(
 ) -> Image.Image:
     rgb = _prepare_rgb(image)
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
 
-    edges = cv2.Canny(
-        cv2.GaussianBlur(gray, (5, 5), 0),
-        35,
-        110
+    edges = np.zeros(gray.shape, dtype=np.uint8)
+
+    for channel in (gray, lab[:, :, 1], lab[:, :, 2]):
+        blurred = cv2.GaussianBlur(
+            channel,
+            (5, 5),
+            0
+        )
+
+        channel_edges = cv2.Canny(
+            blurred,
+            35,
+            110
+        )
+
+        edges = cv2.bitwise_or(edges, channel_edges)
+
+    kernel_size = _odd_kernel(
+        max(3, int(round(min(gray.shape) * 0.006))),
+        min(9, min(gray.shape))
     )
 
     edges = cv2.morphologyEx(
@@ -561,7 +757,7 @@ def remove_by_contour(
         cv2.MORPH_CLOSE,
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
-            (7, 7)
+            (kernel_size, kernel_size)
         ),
         iterations=2
     )
@@ -573,36 +769,33 @@ def remove_by_contour(
     )
 
     h, w = gray.shape
-    mask = np.zeros((h, w), np.uint8)
+    candidates = []
 
-    min_area = max(25, int(h * w * 0.00015))
+    for contour in contours:
+        area = cv2.contourArea(contour)
 
-    valid = [
-        c for c in contours
-        if cv2.contourArea(c) >= min_area
-    ]
+        if area < max(20, int(h * w * 0.0001)):
+            continue
 
-    if valid:
-        # Preserve all plausible foreground contours instead of only the largest one.
-        valid.sort(
-            key=cv2.contourArea,
-            reverse=True
+        candidate = np.zeros((h, w), dtype=np.uint8)
+
+        cv2.drawContours(
+            candidate,
+            [contour],
+            -1,
+            1,
+            cv2.FILLED
         )
 
-        for contour in valid:
-            area = cv2.contourArea(contour)
+        if float(candidate.mean()) >= 0.995:
+            continue
 
-            if area > h * w * 0.97:
-                continue
+        candidates.append(candidate)
 
-            cv2.drawContours(
-                mask,
-                [contour],
-                -1,
-                1,
-                cv2.FILLED
-            )
-
+    if not candidates:
+        mask = np.ones((h, w), dtype=np.uint8)
+    else:
+        mask = _select_polarity(candidates, rgb)
         mask = _clean_binary(mask)
 
     return _rgba_from_mask(rgb, mask, feather)
@@ -612,7 +805,7 @@ def remove_image_background(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
-    source = image.copy()
+    source = image.copy().convert("RGB")
     source.thumbnail(MAX_IMAGE_SIZE, Image.Resampling.LANCZOS)
 
     from rembg import remove

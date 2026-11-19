@@ -1,5 +1,4 @@
-
-"""Prompt-guided segmentation for SAM 2 and classical image algorithms."""
+"""Prompt-guided segmentation using SAM2 and classical algorithms."""
 
 from __future__ import annotations
 
@@ -12,7 +11,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from ..config import MAX_IMAGE_SIZE
+from . import background_removal
+
 
 DEFAULT_MODEL_ID = os.getenv(
     "SAM2_MODEL_ID",
@@ -43,12 +43,14 @@ def get_sam2():
             from transformers import Sam2Model, Sam2Processor
 
             _device = get_device()
+
             model_id = os.getenv(
                 "SAM2_MODEL_ID",
                 DEFAULT_MODEL_ID
             )
 
             _processor = Sam2Processor.from_pretrained(model_id)
+
             _model = Sam2Model.from_pretrained(
                 model_id
             ).to(_device).eval()
@@ -56,7 +58,10 @@ def get_sam2():
             return _model, _processor, _device
 
         except Exception as exc:
-            _model = _processor = _device = None
+            _model = None
+            _processor = None
+            _device = None
+
             raise RuntimeError(
                 f"Không thể tải SAM 2: {exc}"
             ) from exc
@@ -67,6 +72,9 @@ def _validate_prompts(
     width: int,
     height: int
 ):
+    if not isinstance(prompts, dict):
+        raise ValueError("Dữ liệu vùng chọn không hợp lệ.")
+
     raw_points = prompts.get("points", [])
 
     if not isinstance(raw_points, list) or len(raw_points) > 512:
@@ -74,7 +82,8 @@ def _validate_prompts(
             "Danh sách điểm không hợp lệ (tối đa 512 điểm)."
         )
 
-    points, labels = [], []
+    points = []
+    labels = []
 
     for item in raw_points:
         try:
@@ -82,7 +91,10 @@ def _validate_prompts(
             y = float(item["y"])
             label = int(item["label"])
 
-            if label not in (0, 1) or not np.isfinite([x, y]).all():
+            if (
+                label not in (0, 1)
+                or not np.isfinite([x, y]).all()
+            ):
                 continue
 
             points.append([
@@ -140,7 +152,10 @@ def _validate_prompts(
     polygon = prompts.get("polygon")
 
     if polygon:
-        if not isinstance(polygon, list) or not 3 <= len(polygon) <= 300:
+        if (
+            not isinstance(polygon, list)
+            or not 3 <= len(polygon) <= 300
+        ):
             raise ValueError(
                 "Polygon cần từ 3 đến 300 điểm."
             )
@@ -251,7 +266,12 @@ def _apply_constraints(
     return result
 
 
-def _candidate_score(mask, gray, points, labels, roi):
+def _candidate_score(
+    mask,
+    points,
+    labels,
+    roi
+):
     candidate = (
         (mask > 0).astype(np.uint8) * roi
     )
@@ -262,473 +282,25 @@ def _candidate_score(mask, gray, points, labels, roi):
     h, w = candidate.shape
     score = 0.0
 
-    fg_total = 0
-    bg_total = 0
-
     for (x, y), label in zip(points, labels):
-        hit = int(candidate[y, x] > 0)
+        hit = candidate[y, x] > 0
 
         if label == 1:
-            fg_total += 1
-            score += 8.0 if hit else -12.0
+            score += 10.0 if hit else -15.0
         else:
-            bg_total += 1
-            score += -10.0 if hit else 4.0
-
-    if fg_total:
-        score += 15.0 * (
-            sum(
-                candidate[y, x] > 0
-                for (x, y), label in zip(points, labels)
-                if label == 1
-            ) / fg_total
-        )
+            score += -12.0 if hit else 5.0
 
     border = np.zeros_like(candidate, bool)
     band = max(1, min(h, w) // 35)
 
-    border[:band] = border[-band:] = True
-    border[:, :band] = border[:, -band:] = True
+    border[:band] = True
+    border[-band:] = True
+    border[:, :band] = True
+    border[:, -band:] = True
 
     score -= float(candidate[border].mean()) * 2.0
 
-    area = float(candidate.mean())
-    score -= abs(area - 0.35) * 0.15
-
     return score
-
-
-def _classical_initial_mask(
-    rgb,
-    method,
-    key_color,
-    tolerance,
-    points,
-    labels,
-    rect,
-    polygon
-):
-    h, w = rgb.shape[:2]
-
-    gray = cv2.cvtColor(
-        rgb,
-        cv2.COLOR_RGB2GRAY
-    )
-
-    roi = _make_roi(
-        (h, w),
-        rect,
-        polygon
-    )
-
-    fg_seed, bg_seed = _seed_maps(
-        (h, w),
-        points,
-        labels
-    )
-
-    if rect or polygon:
-        roi_pixels = roi > 0
-    else:
-        roi_pixels = np.ones((h, w), bool)
-
-    if method in ("otsu", "adaptive"):
-        blurred = cv2.GaussianBlur(
-            gray,
-            (5, 5),
-            0
-        )
-
-        candidates = []
-
-        if method == "otsu":
-            _, base = cv2.threshold(
-                blurred,
-                0,
-                255,
-                cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
-
-            candidates = [
-                base > 0,
-                base == 0
-            ]
-
-        else:
-            block = max(
-                11,
-                min(101, (min(h, w) // 12) | 1)
-            )
-
-            if block % 2 == 0:
-                block -= 1
-
-            candidates = [
-                cv2.adaptiveThreshold(
-                    blurred,
-                    255,
-                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    p,
-                    block,
-                    2
-                ) > 0
-                for p in (
-                    cv2.THRESH_BINARY,
-                    cv2.THRESH_BINARY_INV
-                )
-            ]
-
-        candidates = [
-            cv2.morphologyEx(
-                c.astype(np.uint8),
-                cv2.MORPH_CLOSE,
-                np.ones((5, 5), np.uint8)
-            )
-            for c in candidates
-        ]
-
-        mask = max(
-            candidates,
-            key=lambda c: _candidate_score(
-                c,
-                gray,
-                points,
-                labels,
-                roi
-            )
-        )
-
-    elif method == "chroma":
-        key = np.array(
-            [int(key_color[i:i + 2], 16) for i in (1, 3, 5)],
-            np.uint8
-        )
-
-        lab = cv2.cvtColor(
-            rgb,
-            cv2.COLOR_RGB2LAB
-        ).astype(np.float32)
-
-        key_lab = cv2.cvtColor(
-            key.reshape(1, 1, 3),
-            cv2.COLOR_RGB2LAB
-        ).astype(np.float32)[0, 0]
-
-        distance = np.linalg.norm(
-            lab - key_lab,
-            axis=2
-        )
-
-        mask = (
-            distance > max(8.0, float(tolerance) * 0.7)
-        ).astype(np.uint8)
-
-    elif method == "kmeans":
-        lab = cv2.cvtColor(
-            rgb,
-            cv2.COLOR_RGB2LAB
-        ).astype(np.float32)
-
-        yy, xx = np.mgrid[:h, :w].astype(np.float32)
-
-        features = np.dstack((
-            lab,
-            xx / max(1, w) * 16,
-            yy / max(1, h) * 16
-        )).reshape(-1, 5)
-
-        sample = (
-            features
-            if len(features) <= 160000
-            else features[
-                np.linspace(
-                    0,
-                    len(features) - 1,
-                    160000
-                ).astype(int)
-            ]
-        )
-
-        k = min(
-            5,
-            max(2, len(sample) // 1000)
-        )
-
-        criteria = (
-            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
-            55,
-            0.35
-        )
-
-        _, _, centers = cv2.kmeans(
-            sample.astype(np.float32),
-            k,
-            None,
-            criteria,
-            4,
-            cv2.KMEANS_PP_CENTERS
-        )
-
-        labels_map = np.empty(
-            len(features),
-            np.uint8
-        )
-
-        for start in range(0, len(features), 90000):
-            chunk = features[start:start + 90000]
-
-            d = (
-                (chunk[:, None, :] - centers[None, :, :]) ** 2
-            ).sum(axis=2)
-
-            labels_map[start:start + len(chunk)] = d.argmin(axis=1)
-
-        labels_map = labels_map.reshape(h, w)
-
-        if np.any(fg_seed):
-            target_ids = np.unique(
-                labels_map[fg_seed > 0]
-            )
-
-            mask = np.isin(
-                labels_map,
-                target_ids
-            ).astype(np.uint8)
-
-        else:
-            border = np.zeros((h, w), bool)
-            band = max(1, min(h, w) // 30)
-
-            border[:band] = border[-band:] = True
-            border[:, :band] = border[:, -band:] = True
-
-            counts = [
-                np.mean((labels_map == i)[border])
-                for i in range(k)
-            ]
-
-            background_id = int(np.argmax(counts))
-
-            mask = (
-                labels_map != background_id
-            ).astype(np.uint8)
-
-    elif method == "contour":
-        edges = cv2.Canny(
-            cv2.GaussianBlur(gray, (5, 5), 0),
-            35,
-            110
-        )
-
-        edges = cv2.morphologyEx(
-            edges,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (7, 7)
-            ),
-            iterations=2
-        )
-
-        contours, _ = cv2.findContours(
-            edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        mask = np.zeros((h, w), np.uint8)
-        selected = []
-
-        for contour in contours:
-            if cv2.contourArea(contour) < max(20, h * w * 0.0001):
-                continue
-
-            if points:
-                if any(
-                    label == 1 and
-                    cv2.pointPolygonTest(
-                        contour,
-                        (float(p[0]), float(p[1])),
-                        False
-                    ) >= 0
-                    for p, label in zip(points, labels)
-                ):
-                    selected.append(contour)
-
-            elif rect or polygon:
-                x, y, cw, ch = cv2.boundingRect(contour)
-
-                if np.any(roi[y:y + ch, x:x + cw]):
-                    selected.append(contour)
-
-        if not selected and contours:
-            selected = sorted(
-                contours,
-                key=cv2.contourArea,
-                reverse=True
-            )[:3]
-
-        if selected:
-            cv2.drawContours(
-                mask,
-                selected,
-                -1,
-                1,
-                cv2.FILLED
-            )
-
-    elif method == "watershed":
-        # Use prompt seeds as true watershed markers; automatic markers only fill gaps.
-        smooth = cv2.GaussianBlur(
-            rgb,
-            (5, 5),
-            0
-        )
-
-        gradient = cv2.cvtColor(
-            smooth,
-            cv2.COLOR_RGB2GRAY
-        )
-
-        _, automatic = cv2.threshold(
-            gradient,
-            0,
-            255,
-            cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-
-        automatic = automatic > 0
-
-        markers = np.ones(
-            (h, w),
-            np.int32
-        )
-
-        markers[automatic] = 2
-        markers[roi == 0] = 1
-        markers[fg_seed > 0] = 3
-        markers[bg_seed > 0] = 1
-
-        cv2.watershed(
-            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
-            markers
-        )
-
-        mask = (
-            (markers == 3) |
-            (markers == 2)
-        ).astype(np.uint8)
-
-    else:
-        raise ValueError(
-            "Thuật toán cổ điển không được hỗ trợ."
-        )
-
-    mask = (mask > 0).astype(np.uint8)
-    mask &= roi
-
-    if np.any(fg_seed):
-        mask = np.maximum(
-            mask,
-            fg_seed & roi
-        )
-
-    if np.any(bg_seed):
-        mask[bg_seed > 0] = 0
-
-    return mask
-
-
-def _grabcut_refine(
-    rgb,
-    initial,
-    points,
-    labels,
-    roi
-):
-    h, w = initial.shape
-
-    if h < 3 or w < 3:
-        return initial
-
-    mask = np.full(
-        (h, w),
-        cv2.GC_PR_BGD,
-        np.uint8
-    )
-
-    mask[
-        (initial > 0) & (roi > 0)
-    ] = cv2.GC_PR_FGD
-
-    mask[roi == 0] = cv2.GC_BGD
-
-    fg_seed, bg_seed = _seed_maps(
-        (h, w),
-        points,
-        labels
-    )
-
-    mask[fg_seed > 0] = cv2.GC_FGD
-    mask[bg_seed > 0] = cv2.GC_BGD
-
-    # When no explicit ROI exists, the outer image frame is a useful background
-    # prior. Keep this band narrow so it does not consume ordinary edge details.
-    if np.all(roi > 0):
-        band = max(
-            1,
-            min(h, w) // 100
-        )
-
-        mask[:band, :] = cv2.GC_BGD
-        mask[-band:, :] = cv2.GC_BGD
-        mask[:, :band] = cv2.GC_BGD
-        mask[:, -band:] = cv2.GC_BGD
-
-        mask[fg_seed > 0] = cv2.GC_FGD
-
-    if not np.any(mask == cv2.GC_FGD):
-        dist = cv2.distanceTransform(
-            (initial > 0).astype(np.uint8),
-            cv2.DIST_L2,
-            5
-        )
-
-        if dist.max() > 0:
-            mask[
-                dist > max(2.0, dist.max() * 0.2)
-            ] = cv2.GC_FGD
-
-    if not np.any(np.isin(
-        mask,
-        (cv2.GC_BGD, cv2.GC_PR_BGD)
-    )):
-        mask[0, :] = mask[-1, :] = cv2.GC_BGD
-        mask[:, 0] = mask[:, -1] = cv2.GC_BGD
-
-    try:
-        bgd = np.zeros((1, 65), np.float64)
-        fgd = np.zeros((1, 65), np.float64)
-
-        cv2.grabCut(
-            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
-            mask,
-            None,
-            bgd,
-            fgd,
-            5,
-            cv2.GC_INIT_WITH_MASK
-        )
-
-        refined = np.isin(
-            mask,
-            (cv2.GC_FGD, cv2.GC_PR_FGD)
-        ).astype(np.uint8)
-
-        return refined & roi
-
-    except cv2.error:
-        return initial & roi
 
 
 def _make_overlay_and_rgba(
@@ -736,14 +308,14 @@ def _make_overlay_and_rgba(
     mask: np.ndarray,
     feather: float
 ):
-    from .background_removal import _edge_aware_alpha
-
-    rgb = np.asarray(
-        source.convert("RGB")
-    )
+    rgb = np.asarray(source.convert("RGB"))
 
     binary = (mask > 0).astype(np.uint8)
-    alpha = _edge_aware_alpha(binary, feather)
+
+    alpha = background_removal._edge_aware_alpha(
+        binary,
+        feather
+    )
 
     rgba = np.dstack((rgb, alpha))
 
@@ -787,7 +359,12 @@ def _choose_best_mask(
     )
 
     scores = (
-        outputs.iou_scores.detach().float().cpu().reshape(-1).numpy()
+        outputs.iou_scores
+        .detach()
+        .float()
+        .cpu()
+        .reshape(-1)
+        .numpy()
     )
 
     roi = _make_roi(
@@ -799,7 +376,7 @@ def _choose_best_mask(
     best_mask = None
     best_score = -float("inf")
 
-    for idx, candidate in enumerate(candidates):
+    for index, candidate in enumerate(candidates):
         if candidate.shape != shape:
             candidate = cv2.resize(
                 candidate.astype(np.uint8),
@@ -809,20 +386,21 @@ def _choose_best_mask(
 
         score = _candidate_score(
             candidate,
-            np.zeros(shape, np.uint8),
             points,
             labels,
             roi
         )
 
-        if idx < len(scores):
-            score += float(scores[idx]) * 2.0
+        if index < len(scores):
+            score += float(scores[index]) * 2.0
 
         if score > best_score:
             best_score = score
             best_mask = candidate
 
-    assert best_mask is not None
+    if best_mask is None:
+        raise RuntimeError("SAM 2 không trả về mask hợp lệ.")
+
     return best_mask.astype(np.uint8)
 
 
@@ -857,7 +435,7 @@ def segment_with_sam2(
 
     if not points and not sam_box:
         raise ValueError(
-            "Hãy thêm điểm hoặc khoanh vùng đối tượng trước khi phân đoạn bằng SAM 2."
+            "Hãy thêm điểm hoặc khoanh vùng đối tượng trước khi dùng SAM 2."
         )
 
     model, processor, device = get_sam2()
@@ -902,7 +480,8 @@ def segment_with_sam2(
         torch.cuda.empty_cache()
 
         raise RuntimeError(
-            "GPU thiếu VRAM. Hãy dùng ảnh nhỏ hơn hoặc SAM2_MODEL_ID=facebook/sam2.1-hiera-tiny."
+            "GPU thiếu VRAM. Hãy giảm kích thước ảnh hoặc sử dụng "
+            "SAM2_MODEL_ID=facebook/sam2.1-hiera-tiny."
         ) from exc
 
     finally:
@@ -921,6 +500,64 @@ def segment_with_sam2(
         mask,
         feather
     )
+
+
+def _classical_mask(
+    source: Image.Image,
+    method: str,
+    key_color: str,
+    tolerance: float,
+    feather: float
+) -> np.ndarray:
+    """Run the selected automatic segmentation implementation."""
+    if method == "otsu":
+        result = background_removal.remove_by_otsu(
+            source,
+            feather=0
+        )
+
+    elif method == "adaptive":
+        result = background_removal.remove_by_adaptive(
+            source,
+            feather=0
+        )
+
+    elif method == "kmeans":
+        result = background_removal.remove_by_kmeans(
+            source,
+            feather=0
+        )
+
+    elif method == "chroma":
+        result = background_removal.remove_chroma_background(
+            source,
+            key_color=key_color,
+            tolerance=tolerance,
+            feather=0
+        )
+
+    elif method == "watershed":
+        result = background_removal.remove_by_watershed(
+            source,
+            feather=0
+        )
+
+    elif method == "contour":
+        result = background_removal.remove_by_contour(
+            source,
+            feather=0
+        )
+
+    else:
+        raise ValueError(
+            "Thuật toán phân đoạn không được hỗ trợ."
+        )
+
+    alpha = np.asarray(
+        result.convert("RGBA")
+    )[:, :, 3]
+
+    return (alpha >= 128).astype(np.uint8)
 
 
 def segment_with_method(
@@ -953,59 +590,16 @@ def segment_with_method(
         )
 
     if method == "ai":
-        from .background_removal import remove_image_background
-
-        base_image = remove_image_background(
+        base_image = background_removal.remove_image_background(
             source,
             feather=0
         )
 
         base = (
             np.asarray(base_image.convert("RGBA"))[:, :, 3] >= 128
-        )
-
-        if base.shape != (height, width):
-            base = cv2.resize(
-                base.astype(np.uint8),
-                (width, height),
-                interpolation=cv2.INTER_NEAREST
-            ) > 0
-
-        roi = _make_roi(
-            (height, width),
-            rect,
-            polygon
-        )
-
-        mask = _apply_constraints(
-            base,
-            points,
-            labels,
-            rect,
-            polygon
-        )
-
-        # AI masks are already semantic; refine only when the user supplies corrective prompts.
-        if points:
-            mask = _grabcut_refine(
-                np.asarray(source),
-                mask,
-                points,
-                labels,
-                roi
-            )
-
-            mask = _apply_constraints(
-                mask,
-                points,
-                labels,
-                rect,
-                polygon
-            )
+        ).astype(np.uint8)
 
     elif method == "grabcut":
-        from .background_removal import remove_image_background_grabcut
-
         fg = [
             (x / width, y / height)
             for (x, y), label in zip(points, labels)
@@ -1018,16 +612,15 @@ def segment_with_method(
             if label == 0
         ]
 
-        rect_norm = (
-            None
-            if rect is None
-            else (
+        rect_norm = None
+
+        if rect:
+            rect_norm = (
                 rect[0] / width,
                 rect[1] / height,
                 (rect[2] - rect[0]) / width,
                 (rect[3] - rect[1]) / height
             )
-        )
 
         if polygon:
             poly = np.asarray(polygon)
@@ -1042,82 +635,39 @@ def segment_with_method(
                 (y2 - y1) / height
             )
 
-        base_image = remove_image_background_grabcut(
+        base_image = background_removal.remove_image_background_grabcut(
             source,
-            0,
-            fg,
-            bg,
-            rect_norm
+            feather=0,
+            fg_points=fg,
+            bg_points=bg,
+            rect=rect_norm
         )
 
         base = (
-            np.asarray(base_image)[:, :, 3] >= 128
-        )
-
-        if base.shape != (height, width):
-            base = cv2.resize(
-                base.astype(np.uint8),
-                (width, height),
-                interpolation=cv2.INTER_NEAREST
-            ) > 0
-
-        mask = _apply_constraints(
-            base,
-            points,
-            labels,
-            rect,
-            polygon
-        )
+            np.asarray(base_image.convert("RGBA"))[:, :, 3] >= 128
+        ).astype(np.uint8)
 
     else:
-        rgb = np.asarray(source)
-
-        mask = _classical_initial_mask(
-            rgb,
+        base = _classical_mask(
+            source,
             method,
             key_color,
             tolerance,
-            points,
-            labels,
-            rect,
-            polygon
+            feather
         )
 
-        roi = _make_roi(
-            (height, width),
-            rect,
-            polygon
-        )
-
-        # GrabCut refines the boundary without replacing the selected algorithm.
-        if method in (
-            "otsu",
-            "adaptive",
-            "watershed",
-            "kmeans",
-            "contour",
-            "chroma"
-        ) and (points or rect or polygon):
-
-            mask = _grabcut_refine(
-                rgb,
-                mask,
-                points,
-                labels,
-                roi
-            )
-
-        mask = _apply_constraints(
-            mask,
-            points,
-            labels,
-            rect,
-            polygon
-        )
+    mask = _apply_constraints(
+        base,
+        points,
+        labels,
+        rect,
+        polygon
+    )
 
     if not np.any(mask):
         raise RuntimeError(
-            "Không tìm được vùng đối tượng. Hãy thêm điểm giữ hoặc nới vùng chọn."
+            "Không tìm được vùng đối tượng. "
+            "Hãy thêm điểm giữ hoặc nới vùng chọn."
         )
 
     return _make_overlay_and_rgba(

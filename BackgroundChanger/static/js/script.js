@@ -1,3 +1,4 @@
+
 const subjectInput = document.getElementById("subjectInput");
 const backgroundInput = document.getElementById("backgroundInput");
 const subjectDrop = document.getElementById("subjectDrop");
@@ -31,6 +32,8 @@ const previewState = document.getElementById("previewState");
 const methodSelect = document.getElementById("methodSelect");
 const chromaOptions = document.getElementById("chromaOptions");
 const methodHelp = document.getElementById("methodHelp");
+const keyColorInput = document.getElementById("keyColor");
+const keyColorValue = document.getElementById("keyColorValue");
 
 let originalFile = null;
 let originalImage = null;
@@ -39,6 +42,10 @@ let backgroundImage = null;
 let showOriginalImage = false;
 let backgroundColor = "#e9edf5";
 
+// Canvas lưu ảnh gốc để lấy màu pixel chính xác.
+let sourcePixelCanvas = null;
+let sourcePixelCtx = null;
+
 let subjectX = 0.5;
 let subjectY = 0.52;
 
@@ -46,6 +53,7 @@ let dragging = false;
 let lastPointer = null;
 
 let currentTool = "point_fg";
+
 let prompts = {
     points: [],
     rect: null,
@@ -126,26 +134,126 @@ function updateOutputs() {
     }
 }
 
+// Chuyển màu RGB thành mã HEX.
+function rgbToHex(r, g, b) {
+    return (
+        "#" +
+        [r, g, b]
+            .map(value => {
+                return Math.round(value)
+                    .toString(16)
+                    .padStart(2, "0");
+            })
+            .join("")
+    ).toUpperCase();
+}
+
+// Cập nhật giao diện màu Chroma Key.
+function updateKeyColorDisplay() {
+    if (!keyColorInput || !keyColorValue) {
+        return;
+    }
+
+    keyColorValue.textContent = keyColorInput.value.toUpperCase();
+}
+
+// Lấy màu tại vị trí click trên ảnh gốc.
+function pickColorFromImage(point) {
+    if (!originalImage || !sourcePixelCtx || !point) {
+        setStatus("Không thể lấy màu. Vui lòng tải ảnh trước.", "error");
+        return;
+    }
+
+    try {
+        const pixel = sourcePixelCtx.getImageData(
+            Math.floor(point.x),
+            Math.floor(point.y),
+            1,
+            1
+        ).data;
+
+        const hex = rgbToHex(
+            pixel[0],
+            pixel[1],
+            pixel[2]
+        );
+
+        keyColorInput.value = hex.toLowerCase();
+        updateKeyColorDisplay();
+
+        setStatus(
+            `Đã lấy màu tại vị trí chọn: ${hex} (RGB ${pixel[0]}, ${pixel[1]}, ${pixel[2]}).`,
+            "ok"
+        );
+
+    } catch (error) {
+        console.error("Color picker error:", error);
+        setStatus("Không thể đọc màu tại vị trí này.", "error");
+    }
+}
+
 function updateMethodOptions() {
     const method = methodSelect.value;
 
     chromaOptions.hidden = method !== "chroma";
     segmentEditor.hidden = false;
 
+    const colorPickButton = document.querySelector(
+        '[data-tool="color_pick"]'
+    );
+
+    if (colorPickButton) {
+        colorPickButton.hidden = method !== "chroma";
+    }
+
     const labels = {
-        interactive: ["Phân đoạn bằng SAM 2", "SAM 2 nhận diện đối tượng theo điểm, khung hoặc polygon."],
-        ai: ["Tách nền bằng U²-Net", "Có thể dùng điểm và vùng chọn để hiệu chỉnh mask AI."],
-        grabcut: ["Phân đoạn bằng GrabCut", "Dùng seed foreground/background và ROI để tinh chỉnh mask."],
-        chroma: ["Xóa phông Chroma Key", "Dùng màu phông kết hợp vùng chọn để hạn chế xóa nhầm."],
-        watershed: ["Phân đoạn Watershed", "Dùng kết quả Watershed và các điểm/vùng chọn để hiệu chỉnh."],
-        kmeans: ["Phân đoạn K-means", "Phân cụm màu, sau đó áp dụng các điểm và vùng chọn."],
-        otsu: ["Phân đoạn Otsu", "Ngưỡng Otsu kết hợp các điểm và vùng chọn."],
-        adaptive: ["Adaptive Threshold", "Ngưỡng cục bộ kết hợp các điểm và vùng chọn."],
-        contour: ["Phân đoạn Contour", "Tìm đường bao và giới hạn theo lựa chọn của bạn."]
+        interactive: [
+            "Phân đoạn bằng SAM 2",
+            "SAM 2 nhận diện đối tượng theo điểm, khung hoặc polygon."
+        ],
+        ai: [
+            "Tách nền bằng U²-Net",
+            "Có thể dùng điểm và vùng chọn để hiệu chỉnh mask AI."
+        ],
+        grabcut: [
+            "Phân đoạn bằng GrabCut",
+            "Dùng seed foreground/background và ROI để tinh chỉnh mask."
+        ],
+        chroma: [
+            "Xóa phông Chroma Key",
+            "Chọn công cụ Lấy màu từ ảnh, sau đó click vào màu phông cần xóa."
+        ],
+        watershed: [
+            "Phân đoạn Watershed",
+            "Dùng kết quả Watershed và các điểm/vùng chọn để hiệu chỉnh."
+        ],
+        kmeans: [
+            "Phân đoạn K-means",
+            "Phân cụm màu, sau đó áp dụng các điểm và vùng chọn."
+        ],
+        otsu: [
+            "Phân đoạn Otsu",
+            "Ngưỡng Otsu kết hợp các điểm và vùng chọn."
+        ],
+        adaptive: [
+            "Adaptive Threshold",
+            "Ngưỡng cục bộ kết hợp các điểm và vùng chọn."
+        ],
+        contour: [
+            "Phân đoạn Contour",
+            "Tìm đường bao và giới hạn theo lựa chọn của bạn."
+        ]
     };
 
     removeBtn.textContent = labels[method][0];
     methodHelp.textContent = labels[method][1];
+
+    // Tự động bật công cụ lấy màu khi chọn Chroma Key.
+    if (method === "chroma") {
+        setActiveTool("color_pick");
+    } else if (currentTool === "color_pick") {
+        setActiveTool("point_fg");
+    }
 
     renderSegmentEditor();
 }
@@ -198,10 +306,7 @@ function drawContain(image) {
 }
 
 /**
- * Alpha-composite a transparent foreground over the already-rendered background.
- * Canvas uses the Porter-Duff source-over operation:
- * C_out = C_fg * alpha_fg + C_bg * (1 - alpha_fg)
- * The opacity control multiplies the per-pixel alpha produced by segmentation.
+ * Alpha-composite a transparent foreground over the background.
  */
 function drawAlphaBlended(image, x, y, width, height, opacity = 1) {
     const safeOpacity = Math.max(0, Math.min(1, Number(opacity)));
@@ -296,6 +401,9 @@ function resetSegmentation() {
     applySegmentationBtn.disabled = true;
     promptSummary.textContent = "Chưa có điểm hoặc vùng chọn.";
 
+    segmentState.textContent = originalImage ? "Đã tải ảnh" : "Chưa có ảnh";
+    segmentState.className = "pill";
+
     renderSegmentEditor();
 }
 
@@ -307,6 +415,30 @@ function saveSegmentationHistory() {
     if (segmentationHistory.length > 50) {
         segmentationHistory.shift();
     }
+}
+
+/**
+ * Đánh dấu prompt đã thay đổi.
+ *
+ * Không chạy thuật toán ở đây.
+ * Kết quả cũ bị vô hiệu hóa để tránh áp dụng nhầm mask.
+ */
+function markPromptsChanged() {
+    // Hủy hiệu lực của request cũ nếu có.
+    segmentRequestId++;
+
+    segmentationBusy = false;
+
+    maskImage = null;
+    segmentationResult = null;
+    segmentationImageUrl = null;
+
+    applySegmentationBtn.disabled = true;
+
+    segmentState.textContent = "Đã cập nhật lựa chọn";
+    segmentState.className = "pill";
+
+    updatePromptSummary();
 }
 
 function updatePromptSummary() {
@@ -588,12 +720,18 @@ function setActiveTool(tool) {
         rect: "Kéo chuột để khoanh hình chữ nhật quanh đối tượng.",
         polygon: "Click lần lượt các điểm để tạo polygon.",
         brush_fg: "Tô lên vùng cần giữ.",
-        brush_bg: "Tô lên vùng cần xóa."
+        brush_bg: "Tô lên vùng cần xóa.",
+        color_pick: "Click vào một vị trí trên ảnh để lấy màu pixel làm màu phông cần xóa."
     };
 
     setStatus(labels[tool] || "Chọn công cụ.");
 }
 
+/**
+ * Thêm điểm Foreground hoặc Background.
+ *
+ * Chỉ ghi nhận prompt, không tự động phân đoạn.
+ */
 function addPoint(point, label) {
     if (!point) {
         return;
@@ -607,7 +745,14 @@ function addPoint(point, label) {
         label
     });
 
-    runSegmentation();
+    markPromptsChanged();
+    renderSegmentEditor();
+
+    setStatus(
+        label === 1
+            ? "Đã thêm điểm cần giữ. Bấm Phân đoạn để chạy thuật toán."
+            : "Đã thêm điểm cần xóa. Bấm Phân đoạn để chạy thuật toán."
+    );
 }
 
 function addBrushPoint(point, label) {
@@ -655,6 +800,10 @@ function addBrushPoint(point, label) {
     lastBrushPoint = point;
 }
 
+/**
+ * Hoàn thành polygon chỉ cập nhật prompt.
+ * Không tự động chạy phân đoạn.
+ */
 function finishPolygon() {
     if (polygonDraft.length < 3) {
         setStatus("Polygon cần ít nhất 3 điểm.", "error");
@@ -666,10 +815,18 @@ function finishPolygon() {
     prompts.polygon = [...polygonDraft];
     polygonDraft = [];
 
+    markPromptsChanged();
     renderSegmentEditor();
-    runSegmentation();
+
+    setStatus(
+        "Đã tạo Polygon. Bấm Phân đoạn để chạy thuật toán."
+    );
 }
 
+/**
+ * Hoàn tác chỉ khôi phục prompt.
+ * Không tự động chạy lại thuật toán.
+ */
 function undoSegmentation() {
     if (polygonDraft.length > 0) {
         polygonDraft.pop();
@@ -686,17 +843,12 @@ function undoSegmentation() {
 
     prompts = previous;
 
-    maskImage = null;
-    segmentationResult = null;
-    segmentationImageUrl = null;
-
-    applySegmentationBtn.disabled = true;
-
+    markPromptsChanged();
     renderSegmentEditor();
 
-    if (prompts.points.length || prompts.rect) {
-        runSegmentation();
-    }
+    setStatus(
+        "Đã hoàn tác lựa chọn. Bấm Phân đoạn để cập nhật kết quả."
+    );
 }
 
 async function runSegmentation() {
@@ -729,6 +881,7 @@ async function runSegmentation() {
 
     segmentationBusy = true;
     segmentState.textContent = "Đang phân đoạn";
+    segmentState.className = "pill";
     applySegmentationBtn.disabled = true;
 
     setStatus(
@@ -741,7 +894,7 @@ async function runSegmentation() {
     form.append("feather", document.getElementById("feather").value);
     form.append("prompts", JSON.stringify(prompts));
     form.append("method", methodSelect.value);
-    form.append("key_color", document.getElementById("keyColor").value);
+    form.append("key_color", keyColorInput.value);
     form.append("key_tolerance", document.getElementById("keyTolerance").value);
 
     try {
@@ -792,6 +945,7 @@ async function runSegmentation() {
     } catch (error) {
         if (requestId === segmentRequestId) {
             segmentState.textContent = "Có lỗi";
+            segmentState.className = "pill";
             setStatus(error.message, "error");
         }
 
@@ -820,7 +974,7 @@ function applySegmentation() {
     previewState.className = "pill success";
 
     setStatus(
-        "Đã áp dụng kết quả SAM 2. Bạn có thể thay nền và tải ảnh.",
+        "Đã áp dụng kết quả phân đoạn. Bạn có thể thay nền và tải ảnh.",
         "ok"
     );
 
@@ -851,7 +1005,6 @@ async function setSubjectFile(file) {
         objectUrl = URL.createObjectURL(file);
         const loadedImage = await loadImage(objectUrl);
 
-        // Only invalidate existing processing after the new file has loaded.
         segmentRequestId++;
         removeRequestId++;
         segmentationBusy = false;
@@ -861,6 +1014,23 @@ async function setSubjectFile(file) {
         originalImage = loadedImage;
         subjectImage = null;
         showOriginalImage = false;
+
+        // Tạo canvas riêng chứa ảnh gốc để lấy màu chính xác.
+        sourcePixelCanvas = document.createElement("canvas");
+        sourcePixelCanvas.width = originalImage.naturalWidth;
+        sourcePixelCanvas.height = originalImage.naturalHeight;
+
+        sourcePixelCtx = sourcePixelCanvas.getContext("2d", {
+            willReadFrequently: true
+        });
+
+        sourcePixelCtx.drawImage(
+            originalImage,
+            0,
+            0,
+            sourcePixelCanvas.width,
+            sourcePixelCanvas.height
+        );
 
         segmentCanvas.width = originalImage.naturalWidth;
         segmentCanvas.height = originalImage.naturalHeight;
@@ -881,10 +1051,13 @@ async function setSubjectFile(file) {
         renderSegmentEditor();
 
         setStatus(
-            "Đã tải ảnh. Chọn công cụ và click vào đối tượng cần tách."
+            methodSelect.value === "chroma"
+                ? "Đã tải ảnh. Chọn công cụ Lấy màu từ ảnh và click vào phông nền."
+                : "Đã tải ảnh. Chọn công cụ và click vào đối tượng cần tách."
         );
 
     } catch (error) {
+        console.error(error);
         setStatus("Không thể mở ảnh này.", "error");
     } finally {
         if (objectUrl) {
@@ -898,8 +1071,10 @@ async function setBackgroundFile(file) {
         return;
     }
 
+    let objectUrl = null;
+
     try {
-        const objectUrl = URL.createObjectURL(file);
+        objectUrl = URL.createObjectURL(file);
 
         backgroundImage = await loadImage(objectUrl);
         backgroundColor = null;
@@ -911,10 +1086,13 @@ async function setBackgroundFile(file) {
         });
 
         render();
-        URL.revokeObjectURL(objectUrl);
 
     } catch (error) {
         setStatus("Không thể mở ảnh nền này.", "error");
+    } finally {
+        if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+        }
     }
 }
 
@@ -975,6 +1153,7 @@ controls.forEach(id => {
             segmentationResult = null;
             maskImage = null;
             applySegmentationBtn.disabled = true;
+
             setStatus(
                 "Bạn đã đổi độ mềm viền. Hãy phân đoạn lại để áp dụng giá trị mới."
             );
@@ -982,11 +1161,24 @@ controls.forEach(id => {
     });
 });
 
+// Cập nhật mã HEX khi người dùng tự chọn màu bằng color input.
+keyColorInput.addEventListener("input", () => {
+    updateKeyColorDisplay();
+});
+
 methodSelect.addEventListener("change", () => {
+    segmentRequestId++;
+
     segmentationResult = null;
     maskImage = null;
     segmentationImageUrl = null;
+    segmentationBusy = false;
+
     applySegmentationBtn.disabled = true;
+
+    segmentState.textContent = "Chưa phân đoạn";
+    segmentState.className = "pill";
+
     updateMethodOptions();
 });
 
@@ -1001,6 +1193,8 @@ undoSegmentBtn.addEventListener("click", undoSegmentation);
 
 clearSegmentBtn.addEventListener("click", () => {
     segmentRequestId++;
+    segmentationBusy = false;
+
     resetSegmentation();
 
     segmentState.textContent = "Đã xóa lựa chọn";
@@ -1009,6 +1203,7 @@ clearSegmentBtn.addEventListener("click", () => {
 
 applySegmentationBtn.addEventListener("click", applySegmentation);
 
+// Xử lý thao tác click và kéo trên ảnh.
 segmentCanvas.addEventListener("pointerdown", event => {
     if (!originalImage || segmentationBusy) {
         return;
@@ -1017,6 +1212,12 @@ segmentCanvas.addEventListener("pointerdown", event => {
     const point = pointerToImage(event);
 
     if (!point) {
+        return;
+    }
+
+    // Chế độ lấy màu: chỉ lấy pixel, không tạo prompt phân đoạn.
+    if (currentTool === "color_pick") {
+        pickColorFromImage(point);
         return;
     }
 
@@ -1114,8 +1315,12 @@ function finishRectangle() {
 
     prompts.rect = rect;
 
+    markPromptsChanged();
     renderSegmentEditor();
-    runSegmentation();
+
+    setStatus(
+        "Đã cập nhật khung chọn. Bấm Phân đoạn để chạy thuật toán."
+    );
 }
 
 function finishBrush() {
@@ -1130,8 +1335,12 @@ function finishBrush() {
         prompts.points = prompts.points.slice(-512);
     }
 
+    markPromptsChanged();
     renderSegmentEditor();
-    runSegmentation();
+
+    setStatus(
+        "Đã hoàn thành vùng tô. Bấm Phân đoạn để chạy thuật toán."
+    );
 }
 
 segmentCanvas.addEventListener("pointerup", () => {
@@ -1164,10 +1373,18 @@ removeBtn.addEventListener("click", async () => {
     removeBtn.disabled = true;
 
     try {
-        const hasPrompts = prompts.points.length > 0 || prompts.rect || prompts.polygon;
+        const hasPrompts =
+            prompts.points.length > 0 ||
+            prompts.rect ||
+            prompts.polygon;
+
         if (method === "interactive" || hasPrompts) {
             const result = await runSegmentation();
-            if (!result) return;
+
+            if (!result) {
+                return;
+            }
+
             applySegmentation();
             return;
         }
@@ -1183,9 +1400,10 @@ removeBtn.addEventListener("click", async () => {
         form.append("image", originalFile);
         form.append("feather", document.getElementById("feather").value);
         form.append("method", method);
-        form.append("key_color", document.getElementById("keyColor").value);
+        form.append("key_color", keyColorInput.value);
         form.append("key_tolerance", document.getElementById("keyTolerance").value);
-        if (prompts.points.length || prompts.rect || prompts.polygon) {
+
+        if (hasPrompts) {
             form.append("prompts", JSON.stringify(prompts));
         }
 
@@ -1249,6 +1467,7 @@ function resetAdjustmentControls() {
 
     subjectX = 0.5;
     subjectY = 0.52;
+
     updateOutputs();
 }
 
@@ -1258,22 +1477,24 @@ function restoreOriginalImage() {
         return;
     }
 
-    // Invalidate every in-flight request so an older result cannot replace
-    // the original image after the user has restored it.
     segmentRequestId++;
     removeRequestId++;
     segmentationBusy = false;
 
     subjectImage = null;
     showOriginalImage = true;
+
     resetSegmentation();
     resetAdjustmentControls();
 
     removeBtn.disabled = false;
+
     previewState.textContent = "Ảnh gốc";
     previewState.className = "pill";
+
     segmentState.textContent = "Đã khôi phục ảnh gốc";
     segmentState.className = "pill";
+
     applySegmentationBtn.disabled = true;
 
     setStatus(
@@ -1289,23 +1510,17 @@ restoreOriginalBtn.addEventListener("click", restoreOriginalImage);
 
 resetBtn.addEventListener("click", () => {
     resetAdjustmentControls();
-
-    if (showOriginalImage) {
-        render();
-        return;
-    }
-
     render();
 });
-
 
 downloadBtn.addEventListener("click", () => {
     if (showOriginalImage && originalFile) {
         const originalUrl = URL.createObjectURL(originalFile);
         const originalLink = document.createElement("a");
-        const originalName = originalFile.name.replace(/\\.[^.]+$/, "");
+        const originalName = originalFile.name.replace(/\.[^.]+$/, "");
+        const extension = originalFile.name.match(/\.[^.]+$/)?.[0] || ".png";
 
-        originalLink.download = `${originalName}-original${originalFile.name.match(/\\.[^.]+$/)?.[0] || ".png"}`;
+        originalLink.download = `${originalName}-original${extension}`;
         originalLink.href = originalUrl;
         originalLink.click();
 
@@ -1369,5 +1584,6 @@ canvas.addEventListener("pointercancel", () => {
 });
 
 updateOutputs();
+updateKeyColorDisplay();
 updateMethodOptions();
 render();
