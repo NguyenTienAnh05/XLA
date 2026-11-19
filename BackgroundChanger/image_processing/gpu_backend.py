@@ -1,5 +1,5 @@
 
-"""PyTorch GPU backend for classical image segmentation algorithms."""
+"""Backend xử lý bằng PyTorch (hỗ trợ GPU CUDA, tự fallback về CPU) cho các thuật toán phân đoạn cổ điển."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ import torch.nn.functional as F
 
 
 def get_device() -> torch.device:
-    """Return CUDA when available, otherwise CPU."""
+    """Trả về thiết bị 'cuda' nếu có GPU khả dụng, ngược lại dùng 'cpu'."""
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def get_device_info() -> dict:
-    """Return information about the active processing device."""
+    """Trả về thông tin chi tiết thiết bị tính toán đang hoạt động (CPU/GPU, tên GPU, dung lượng VRAM)."""
     device = get_device()
     cuda = torch.cuda.is_available()
 
@@ -31,6 +31,7 @@ def get_device_info() -> dict:
 
 
 def _rgb_tensor(rgb: np.ndarray) -> torch.Tensor:
+    """Chuyển mảng ảnh RGB (NumPy) sang PyTorch Tensor kiểu float32 trên thiết bị đang chọn."""
     return torch.from_numpy(
         np.ascontiguousarray(rgb)
     ).to(
@@ -40,6 +41,7 @@ def _rgb_tensor(rgb: np.ndarray) -> torch.Tensor:
 
 
 def _gray_tensor(rgb: np.ndarray) -> torch.Tensor:
+    """Chuyển ảnh RGB sang ảnh xám 8-bit trên GPU/CPU theo công thức độ chói chuẩn BT.601."""
     image = _rgb_tensor(rgb) / 255.0
     gray = (
         image[:, :, 0] * 0.299
@@ -50,7 +52,9 @@ def _gray_tensor(rgb: np.ndarray) -> torch.Tensor:
 
 
 def _otsu_threshold(gray: torch.Tensor) -> int:
+    """Tìm ngưỡng Otsu tối ưu trên Tensor ảnh xám bằng cách cực đại hóa phương sai giữa 2 lớp."""
     values = gray.reshape(-1).to(torch.int64)
+    # Tính histogram 256 mức xám và chuẩn hóa thành phân bố xác suất p_i
     histogram = torch.bincount(values, minlength=256).to(torch.float64)
     probability = histogram / histogram.sum()
 
@@ -59,11 +63,13 @@ def _otsu_threshold(gray: torch.Tensor) -> int:
         device=gray.device,
         dtype=torch.float64
     )
+    # Tính tổng xác suất tích lũy (omega) và trung bình tích lũy (mean) theo từng ngưỡng
     omega = torch.cumsum(probability, dim=0)
     mean = torch.cumsum(probability * indices, dim=0)
     total_mean = mean[-1]
     denominator = omega * (1.0 - omega)
 
+    # Tính phương sai giữa hai lớp sigma_B^2(t) và chọn ngưỡng cho giá trị lớn nhất
     between = (
         (total_mean * omega - mean) ** 2
     ) / denominator.clamp_min(1e-12)
@@ -73,10 +79,11 @@ def _otsu_threshold(gray: torch.Tensor) -> int:
 
 
 def otsu_candidates(rgb: np.ndarray) -> list[np.ndarray]:
-    """Return Otsu masks from luminance and Lab lightness."""
+    """Sinh 4 mặt nạ ứng viên Otsu (2 cực tính sáng/tối trên ảnh xám và 2 cực tính trên kênh L của CIELAB)."""
     if rgb is None or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Ảnh đầu vào Otsu không hợp lệ.")
 
+    # Cặp ứng viên 1: phân ngưỡng Otsu trên ảnh xám độ chói
     gray = _gray_tensor(rgb)
     threshold = _otsu_threshold(gray)
 
@@ -85,6 +92,7 @@ def otsu_candidates(rgb: np.ndarray) -> list[np.ndarray]:
         (gray <= threshold).to(torch.uint8)
     ]
 
+    # Cặp ứng viên 2: phân ngưỡng Otsu trên kênh độ sáng L trong không gian màu CIELAB
     lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
     lightness = torch.from_numpy(
         np.ascontiguousarray(lab[:, :, 0])
@@ -105,7 +113,7 @@ def adaptive_candidates(
     block_size: int | None = None,
     constant: float = 2.0
 ) -> list[np.ndarray]:
-    """Adaptive local thresholding using GPU average pooling."""
+    """Sinh 2 mặt nạ ứng viên phân ngưỡng thích nghi cục bộ (thuận & đảo) dùng avg_pool2d trên GPU/CPU."""
     if rgb is None or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Ảnh đầu vào Adaptive Threshold không hợp lệ.")
 
@@ -116,6 +124,7 @@ def adaptive_candidates(
     if min_dim < 3:
         return otsu_candidates(rgb)
 
+    # Tự động chọn kích thước cửa sổ lẻ tỷ lệ theo kích thước ảnh nếu không truyền vào
     if block_size is None:
         block_size = max(11, (min_dim // 12) | 1)
 
@@ -130,6 +139,7 @@ def adaptive_candidates(
     if block_size < 3:
         return otsu_candidates(rgb)
 
+    # Làm trơn nhẹ ảnh xám bằng lọc trung bình 3x3 để giảm nhiễu cục bộ
     gray = F.avg_pool2d(
         gray,
         kernel_size=3,
@@ -137,6 +147,7 @@ def adaptive_candidates(
         padding=1
     )
 
+    # Tính trung bình cục bộ trong cửa sổ block_size x block_size (không tính phần padding vào mẫu số)
     local_mean = F.avg_pool2d(
         gray,
         kernel_size=block_size,
@@ -145,6 +156,7 @@ def adaptive_candidates(
         count_include_pad=False
     )
 
+    # Trả về cả hai cực tính (sáng hơn ngưỡng và tối hơn ngưỡng) để lớp trên tự chọn mask tốt nhất
     normal = gray > (local_mean - float(constant))
     inverted = ~normal
 
@@ -155,7 +167,7 @@ def adaptive_candidates(
 
 
 def _lab_features(rgb: np.ndarray) -> np.ndarray:
-    """Convert RGB pixels to perceptual Lab features on CPU."""
+    """Chuyển đổi ảnh RGB sang không gian màu cảm nhận CIELAB kiểu float32."""
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
 
 
@@ -164,10 +176,10 @@ def _build_kmeans_features(
     spatial_scale: float
 ) -> torch.Tensor:
     """
-    Build Lab + XY features.
+    Tạo ma trận đặc trưng 5 chiều (L, a, b, x, y) cho K-Means.
 
-    Lab is normalized to approximately [0, 1].
-    XY has a much smaller range so color remains dominant.
+    Các kênh Lab được chuẩn hóa về khoảng ~[0, 1].
+    Tọa độ không gian (x, y) nhân hệ số nhỏ (spatial_scale) để màu sắc vẫn giữ vai trò chủ đạo.
     """
     lab = _lab_features(rgb)
     lab[:, :, 0] /= 255.0
@@ -181,11 +193,13 @@ def _build_kmeans_features(
         dtype=torch.float32
     )
 
+    # Tạo lưới tọa độ không gian (x, y) chuẩn hóa trong [0, spatial_scale]
     h, w = image.shape[:2]
     y = torch.linspace(0, spatial_scale, h, device=image.device)
     x = torch.linspace(0, spatial_scale, w, device=image.device)
     yy, xx = torch.meshgrid(y, x, indexing="ij")
 
+    # Ghép 3 kênh màu Lab với 2 kênh tọa độ thành bảng (H*W) x 5
     return torch.cat(
         (image, xx.unsqueeze(-1), yy.unsqueeze(-1)),
         dim=-1
@@ -196,6 +210,7 @@ def _squared_distances(
     values: torch.Tensor,
     centers: torch.Tensor
 ) -> torch.Tensor:
+    """Tính nhanh ma trận bình phương khoảng cách Euclid bằng khai triển ||a - b||^2 = ||a||^2 + ||b||^2 - 2a·b."""
     return (
         values.square().sum(dim=1, keepdim=True)
         + centers.square().sum(dim=1).unsqueeze(0)
@@ -208,9 +223,10 @@ def _kmeans_plus_plus(
     k: int,
     generator: torch.Generator
 ) -> torch.Tensor:
-    """K-Means++ initialization."""
+    """Khởi tạo k tâm cụm ban đầu bằng thuật toán K-Means++ (ưu tiên điểm cách xa các tâm đã chọn)."""
     n = sample.shape[0]
 
+    # Chọn ngẫu nhiên tâm cụm đầu tiên
     first = torch.randint(
         n,
         (1,),
@@ -220,6 +236,7 @@ def _kmeans_plus_plus(
 
     selected = [int(first)]
 
+    # Lưu bình phương khoảng cách từ mỗi điểm đến tâm gần nhất đã chọn
     closest = _squared_distances(
         sample,
         sample[selected]
@@ -230,6 +247,7 @@ def _kmeans_plus_plus(
         total = weights.sum()
 
         if not torch.isfinite(total) or total <= 0:
+            # Trường hợp suy biến (mọi điểm trùng nhau): lấy điểm chưa được chọn đầu tiên
             remaining = torch.tensor(
                 [i for i in range(n) if i not in selected],
                 device=sample.device,
@@ -242,6 +260,7 @@ def _kmeans_plus_plus(
                 else selected[-1]
             )
         else:
+            # Lấy mẫu xác suất tỷ lệ thuận với bình phương khoảng cách tới tâm gần nhất
             probabilities = weights / total
 
             next_index = int(torch.multinomial(
@@ -250,6 +269,7 @@ def _kmeans_plus_plus(
                 generator=generator
             ).item())
 
+            # Nếu lỡ trùng tâm đã chọn, lấy điểm còn lại có khoảng cách xa nhất
             if next_index in selected:
                 available = ~torch.isin(
                     torch.arange(n, device=sample.device),
@@ -266,6 +286,7 @@ def _kmeans_plus_plus(
 
         selected.append(next_index)
 
+        # Cập nhật khoảng cách ngắn nhất sau khi thêm tâm mới
         distance = _squared_distances(
             sample,
             sample[next_index:next_index + 1]
@@ -281,15 +302,17 @@ def _fit_kmeans(
     k: int,
     iterations: int = 35
 ) -> torch.Tensor:
-    """Memory-bounded K-Means using GPU tensors."""
+    """Chạy vòng lặp Lloyd của K-Means trên tập mẫu bằng PyTorch Tensor (dừng sớm khi tâm dịch chuyển < 1e-4)."""
     generator = torch.Generator(device=sample.device)
-    generator.manual_seed(42)
+    generator.manual_seed(42)  # Cố định seed để kết quả phân cụm ổn định
 
     centers = _kmeans_plus_plus(sample, k, generator)
 
     for _ in range(iterations):
+        # Bước 1: Gán từng điểm vào tâm cụm gần nhất
         labels = _squared_distances(sample, centers).argmin(dim=1)
 
+        # Bước 2: Tính lại tâm cụm mới bằng trung bình các điểm trong cụm
         sums = torch.zeros_like(centers)
         sums.index_add_(0, labels, sample)
 
@@ -300,10 +323,12 @@ def _fit_kmeans(
 
         updated = sums / counts.clamp_min(1.0)
 
+        # Giữ nguyên tâm cũ nếu có cụm bị rỗng
         empty = counts.squeeze(1) == 0
         if torch.any(empty):
             updated[empty] = centers[empty]
 
+        # Kiểm tra điều kiện hội tụ
         movement = torch.max(torch.abs(updated - centers))
         centers = updated
 
@@ -320,7 +345,7 @@ def kmeans_labels(
     chunk_size: int = 100000,
     spatial_scale: float = 0.16
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Cluster image pixels and return an HxW label map and centers."""
+    """Phân cụm toàn bộ pixel ảnh (lấy mẫu để học tâm cụm, sau đó gán nhãn theo từng lô chunk để tiết kiệm VRAM)."""
     if rgb is None or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Ảnh đầu vào K-Means không hợp lệ.")
 
@@ -336,6 +361,7 @@ def kmeans_labels(
     if total < 2:
         raise ValueError("Ảnh quá nhỏ để chạy K-Means.")
 
+    # Lấy mẫu ngẫu nhiên tối đa max_sample pixel để học tâm cụm nhanh và không tràn bộ nhớ
     sample_size = min(total, int(max_sample))
 
     if total > sample_size:
@@ -355,6 +381,7 @@ def kmeans_labels(
     k = min(k, sample.shape[0])
 
     try:
+        # Học tâm cụm trên tập mẫu, sau đó gán nhãn toàn bộ ảnh theo từng chunk_size pixel
         centers = _fit_kmeans(sample, k)
         label_parts = []
 
@@ -389,7 +416,7 @@ def chroma_alpha(
     key_color: str,
     tolerance: float
 ) -> np.ndarray:
-    """Create a soft chroma alpha mask using perceptual Lab distance."""
+    """Tạo mặt nạ Alpha mềm cho Chroma Key dựa trên khoảng cách màu trong không gian cảm nhận CIELAB."""
     if (
         not isinstance(key_color, str)
         or len(key_color) != 7
@@ -408,6 +435,7 @@ def chroma_alpha(
     if rgb is None or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Ảnh đầu vào Chroma Key không hợp lệ.")
 
+    # Chuyển cả ảnh và màu khóa sang CIELAB để khoảng cách màu sát với cảm nhận mắt người hơn RGB
     image_lab = cv2.cvtColor(
         rgb,
         cv2.COLOR_RGB2LAB
@@ -428,10 +456,12 @@ def chroma_alpha(
         dtype=torch.float32
     )
 
+    # Tính khoảng cách màu Euclid trong CIELAB giữa mỗi pixel và màu phông
     distance = torch.sqrt(
         (image - key).square().sum(dim=2).clamp_min(0)
     )
 
+    # Tạo dải chuyển tiếp mềm [low, high] theo hàm nội suy mượt smoothstep: 3t^2 - 2t^3
     tolerance = max(1.0, min(float(tolerance), 220.0))
     low = max(4.0, tolerance * 0.45)
     high = max(low + 8.0, tolerance * 1.15)

@@ -1,4 +1,4 @@
-"""Prompt-guided segmentation using SAM2 and classical algorithms."""
+"""Phân đoạn đối tượng theo gợi ý tương tác (prompt) dùng chung cho SAM 2 và các thuật toán cổ điển."""
 
 from __future__ import annotations
 
@@ -14,11 +14,13 @@ from PIL import Image
 from . import background_removal
 
 
+# ID mô hình SAM 2 mặc định (có thể ghi đè qua biến môi trường SAM2_MODEL_ID)
 DEFAULT_MODEL_ID = os.getenv(
     "SAM2_MODEL_ID",
     "facebook/sam2.1-hiera-small"
 )
 
+# Cache toàn cục cho mô hình SAM 2 kèm khóa luồng đảm bảo an toàn khi nhiều request gọi đồng thời
 _model = None
 _processor = None
 _device = None
@@ -26,10 +28,12 @@ _model_lock = threading.Lock()
 
 
 def get_device() -> str:
+    """Trả về 'cuda' nếu có GPU hỗ trợ CUDA, ngược lại dùng 'cpu'."""
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def get_sam2():
+    """Nạp lười (lazy-load) mô hình SAM 2 và Sam2Processor theo kiểu thread-safe."""
     global _model, _processor, _device
 
     if _model is not None and _processor is not None:
@@ -72,6 +76,7 @@ def _validate_prompts(
     width: int,
     height: int
 ):
+    """Kiểm tra hợp lệ và kẹp tọa độ các prompt (points <= 512, rect >= 5x5, polygon 3..300) về trong ảnh."""
     if not isinstance(prompts, dict):
         raise ValueError("Dữ liệu vùng chọn không hợp lệ.")
 
@@ -185,6 +190,7 @@ def _validate_prompts(
 
 
 def _make_roi(shape, rect, polygon):
+    """Tạo mặt nạ vùng quan tâm (ROI) là phép giao giữa khung chữ nhật (rect) và đa giác (polygon)."""
     h, w = shape
     roi = np.ones((h, w), np.uint8)
 
@@ -211,6 +217,7 @@ def _make_roi(shape, rect, polygon):
 
 
 def _seed_maps(shape, points, labels):
+    """Vẽ 2 bản đồ hạt giống nhị phân (fg cho điểm giữ label=1, bg cho điểm xóa label=0) dạng đĩa tròn nhỏ."""
     h, w = shape
 
     fg = np.zeros((h, w), np.uint8)
@@ -240,6 +247,7 @@ def _apply_constraints(
     rect,
     polygon
 ):
+    """Áp dụng ràng buộc vùng chọn lên mask: cắt theo ROI (rect/polygon), cộng điểm giữ và xóa điểm nền."""
     result = (mask > 0).astype(np.uint8)
 
     roi = _make_roi(
@@ -272,6 +280,7 @@ def _candidate_score(
     labels,
     roi
 ):
+    """Chấm điểm mask ứng viên của SAM 2 theo mức độ khớp điểm giữ/xóa và độ chạm viền ảnh (cao hơn là tốt hơn)."""
     candidate = (
         (mask > 0).astype(np.uint8) * roi
     )
@@ -308,6 +317,7 @@ def _make_overlay_and_rgba(
     mask: np.ndarray,
     feather: float
 ):
+    """Tạo ảnh lớp phủ xanh ngọc bán trong suốt (xem trước mask) và ảnh chủ thể RGBA đã làm mềm biên."""
     rgb = np.asarray(source.convert("RGB"))
 
     binary = (mask > 0).astype(np.uint8)
@@ -343,6 +353,7 @@ def _choose_best_mask(
     polygon,
     shape
 ):
+    """Hậu xử lý các mask do SAM 2 sinh ra và chọn mask có tổng điểm (_candidate_score + 2*IoU) cao nhất."""
     processed = processor.post_process_masks(
         outputs.pred_masks.cpu(),
         inputs["original_sizes"]
@@ -409,6 +420,7 @@ def segment_with_sam2(
     prompts: dict[str, Any],
     feather: float = 1.2
 ):
+    """Phân đoạn đối tượng tương tác bằng SAM 2 từ các điểm giữ/xóa, khung chữ nhật hoặc hộp bao polygon."""
     source = image.convert("RGB")
     width, height = source.size
 
@@ -509,7 +521,7 @@ def _classical_mask(
     tolerance: float,
     feather: float
 ) -> np.ndarray:
-    """Run the selected automatic segmentation implementation."""
+    """Chạy thuật toán cổ điển tương ứng (tắt feather) để tạo mask nhị phân ban đầu (alpha >= 128)."""
     if method == "otsu":
         result = background_removal.remove_by_otsu(
             source,
@@ -568,6 +580,7 @@ def segment_with_method(
     key_color: str = "#00ff00",
     tolerance: float = 75.0
 ):
+    """Điều phối phân đoạn tương tác cho tất cả 9 phương pháp: tạo mask nền rồi áp dụng _apply_constraints."""
     if method == "interactive":
         return segment_with_sam2(
             image,

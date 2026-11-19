@@ -1,8 +1,8 @@
 
-"""Classical and AI background-removal algorithms.
+"""Các thuật toán tách nền ảnh cổ điển và học sâu (AI).
 
-The classical methods share mask refinement utilities but keep their own
-segmentation strategy. PyTorch operations use CUDA when available.
+Các phương pháp cổ điển dùng chung bộ tiện ích lọc/tinh chỉnh mask nhưng giữ
+chiến lược phân đoạn riêng; các phép toán PyTorch tự động dùng GPU CUDA khi có.
 """
 
 from __future__ import annotations
@@ -15,18 +15,22 @@ from ..config import MAX_IMAGE_SIZE
 from . import gpu_backend
 
 
+# Lưu cache phiên làm việc U²-Net (rembg) để không phải nạp lại mô hình nhiều lần
 _rembg_session = None
 
 
 def get_device() -> str:
+    """Trả về tên thiết bị tính toán hiện tại ('cuda' hoặc 'cpu')."""
     return str(gpu_backend.get_device())
 
 
 def get_device_info() -> dict:
+    """Trả về thông tin chi tiết thiết bị (CPU/GPU, tên GPU, tổng VRAM)."""
     return gpu_backend.get_device_info()
 
 
 def _get_rembg_session():
+    """Khởi tạo lười session U²-Net (ưu tiên ONNX CUDAExecutionProvider nếu máy có GPU)."""
     global _rembg_session
 
     if _rembg_session is None:
@@ -61,6 +65,7 @@ def _get_rembg_session():
 
 
 def _prepare_rgb(image: Image.Image) -> np.ndarray:
+    """Chuẩn hóa ảnh PIL sang mảng NumPy RGB uint8 và thu nhỏ không vượt quá MAX_IMAGE_SIZE."""
     if not isinstance(image, Image.Image):
         raise TypeError("Đầu vào phải là ảnh PIL.")
 
@@ -74,6 +79,7 @@ def _border_mask(
     shape: tuple[int, int],
     fraction: float = 0.02
 ) -> np.ndarray:
+    """Tạo mặt nạ boolean đánh dấu dải viền ngoài cùng (mặc định 2% cạnh nhỏ) để ước lượng hậu cảnh."""
     h, w = shape
     band = max(1, int(round(min(h, w) * fraction)))
 
@@ -87,6 +93,7 @@ def _border_mask(
 
 
 def _odd_kernel(value: int, maximum: int = 15) -> int:
+    """Đảm bảo kích thước kernel luôn là số lẻ trong đoạn [3, maximum]."""
     value = max(3, int(value))
 
     if value % 2 == 0:
@@ -104,6 +111,7 @@ def _clean_binary(
     mask: np.ndarray,
     remove_small: bool = True
 ) -> np.ndarray:
+    """Làm sạch mask nhị phân: Opening khử nhiễu nhỏ, Closing lấp lỗ hổng, và lọc bỏ các mảnh quá nhỏ."""
     mask = (np.asarray(mask) > 0).astype(np.uint8)
     h, w = mask.shape
 
@@ -168,6 +176,7 @@ def _edge_aware_alpha(
     binary: np.ndarray,
     feather: float = 1.2
 ) -> np.ndarray:
+    """Tạo kênh Alpha mềm theo khoảng cách có dấu (Signed Distance Transform) để chuyển tiếp biên mượt hơn."""
     mask = (np.asarray(binary) > 0).astype(np.uint8)
 
     if not np.any(mask):
@@ -208,6 +217,7 @@ def _rgba_from_mask(
     mask: np.ndarray,
     feather: float = 1.2
 ) -> Image.Image:
+    """Ghép ảnh RGB với mask nhị phân (đã làm mềm biên bằng _edge_aware_alpha) thành ảnh PIL RGBA."""
     if mask.shape != rgb.shape[:2]:
         raise ValueError("Mask không khớp kích thước ảnh.")
 
@@ -221,7 +231,7 @@ def smooth_alpha(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
-    """Preserve model alpha while refining hard edge transitions."""
+    """Giữ nguyên vùng Alpha bán trong suốt (0 < alpha < 255) từ mô hình, đồng thời làm mềm các biên cắt cứng."""
     rgba = image.convert("RGBA")
     pixels = np.asarray(rgba).copy()
     alpha = pixels[:, :, 3]
@@ -244,7 +254,7 @@ def _candidate_score(
     mask: np.ndarray,
     rgb: np.ndarray
 ) -> float:
-    """Score a binary foreground candidate without assuming fixed object size."""
+    """Chấm điểm mask ứng viên (điểm càng thấp càng tốt): phạt mask chạm nhiều viền ảnh hoặc quá nhỏ/quá lớn, thưởng độ tương phản biên cao."""
     mask = (mask > 0).astype(np.uint8)
     h, w = mask.shape
 
@@ -305,6 +315,7 @@ def _select_polarity(
     candidates: list[np.ndarray],
     rgb: np.ndarray
 ) -> np.ndarray:
+    """Làm sạch các mask ứng viên và chọn mask có cực tính (sáng/tối) đạt điểm _candidate_score thấp nhất."""
     if not candidates:
         raise ValueError("Không có mask ứng viên để lựa chọn.")
 
@@ -333,6 +344,7 @@ def remove_chroma_background(
     tolerance: float = 75,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền Chroma Key trong không gian CIELAB (qua gpu_backend) kèm bước khử tràn màu viền (despill)."""
     rgb = _prepare_rgb(image)
 
     alpha = gpu_backend.chroma_alpha(
@@ -349,7 +361,7 @@ def remove_chroma_background(
         dtype=np.uint8
     )
 
-    # Reduce color spill only on partially transparent edge pixels.
+    # Khử tràn màu nền cũ (color spill) chỉ trên các pixel biên bán trong suốt (8 < alpha < 248)
     if int(key_rgb.max()) - int(key_rgb.min()) > 25:
         dominant = int(np.argmax(key_rgb))
         other = [index for index in range(3) if index != dominant]
@@ -392,6 +404,7 @@ def remove_image_background_grabcut(
     bg_points: list[tuple[float, float]] | None = None,
     rect: tuple[float, float, float, float] | None = None
 ) -> Image.Image:
+    """Tách nền bằng GrabCut (8 vòng lặp), hỗ trợ khung ROI, điểm giữ/xóa và tự dùng lề 3% khi chạy tự động."""
     rgb = _prepare_rgb(image)
     h, w = rgb.shape[:2]
 
@@ -505,6 +518,7 @@ def remove_by_otsu(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền bằng Otsu trên GPU/CPU (ảnh xám + kênh L của CIELAB) rồi tự động chọn cực tính đúng."""
     rgb = _prepare_rgb(image)
 
     candidates = gpu_backend.otsu_candidates(rgb)
@@ -517,6 +531,7 @@ def remove_by_adaptive(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền bằng Adaptive Threshold cục bộ trên GPU/CPU; tự chuyển sang Otsu nếu mask thu được quá nhỏ."""
     rgb = _prepare_rgb(image)
 
     candidates = gpu_backend.adaptive_candidates(
@@ -543,6 +558,7 @@ def remove_by_watershed(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền bằng Watershed: dùng Otsu đã chọn cực tính tạo hạt giống lõi (Distance Transform >= 0.32*max) và nền chắc chắn."""
     rgb = _prepare_rgb(image)
     h, w = rgb.shape[:2]
 
@@ -631,6 +647,7 @@ def remove_by_kmeans(
     k: int = 4,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền bằng K-Means (đặc trưng Lab + XY trên GPU/CPU): xác định các cụm chạm viền ảnh làm nền, phần còn lại là chủ thể."""
     rgb = _prepare_rgb(image)
     h, w = rgb.shape[:2]
 
@@ -726,6 +743,7 @@ def remove_by_contour(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền bằng Canny đa kênh (ảnh xám + kênh a, b của CIELAB), khép cạnh bằng Closing rồi chọn contour ứng viên tốt nhất."""
     rgb = _prepare_rgb(image)
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
@@ -805,6 +823,7 @@ def remove_image_background(
     image: Image.Image,
     feather: float = 1.2
 ) -> Image.Image:
+    """Tách nền tự động bằng mô hình học sâu U²-Net (rembg) có bật alpha_matting để tinh chỉnh viền tóc/chi tiết mảnh."""
     source = image.copy().convert("RGB")
     source.thumbnail(MAX_IMAGE_SIZE, Image.Resampling.LANCZOS)
 
